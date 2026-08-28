@@ -1,0 +1,16 @@
+# ---- Build outputs ----
+audio-tool/bin/
+audio-tool/obj/
+audio-tool/setdev/bin/
+audio-tool/setdev/obj/
+
+# ---- Downloaded pronunciation cache (regenerated on demand) ----
+audio-cache/
+
+# ---- Node ----
+node_modules/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.log

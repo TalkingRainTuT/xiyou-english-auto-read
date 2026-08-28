@@ -1,0 +1,11 @@
+{
+  "port": 9222,
+  "cdpUrl": "http://127.0.0.1",
+  "appUrlPrefix": "https://student.xiyouyingyu.com",
+  "clientExe": "D:\\Program Files\\Xiyou\\西柚英语个人版.exe",
+  "micDevice": "CABLE Output",
+  "playDevice": "CABLE Input",
+  "audioToolExe": "audio-tool/bin/Release/net6.0/xiaoyou-audio.exe",
+  "cacheDir": "audio-cache",
+  "replayMaxMs": 12000
+}

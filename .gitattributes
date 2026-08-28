@@ -1,0 +1,14 @@
+# Normalize line endings
+* text=auto
+
+# Preserve CRLF for Windows batch (cmd.exe needs CRLF)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Preserve LF for text scripts (node/ps1/json) to avoid encoding surprises
+*.js text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.json text eol=lf
+*.ps1 text eol=crlf
+*.md text eol=lf
