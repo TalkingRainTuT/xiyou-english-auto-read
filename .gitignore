@@ -7,6 +7,9 @@ audio-tool/setdev/obj/
 # ---- Downloaded pronunciation cache (regenerated on demand) ----
 audio-cache/
 
+# ---- Runtime logs (per-run) ----
+logs/
+
 # ---- Node ----
 node_modules/
 

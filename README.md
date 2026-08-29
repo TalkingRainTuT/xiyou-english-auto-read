@@ -59,15 +59,34 @@
 
 1. **安装 VB-Cable**：https://vb-audio.com/Cable/ ，下载 `VBCABLE_Setup_x64.exe`，
    以管理员身份运行，**安装后重启电脑**。
-2. **编译音频工具**（需要 .NET 6 SDK）：
+
+2. **安装 Node.js**（脚本用 `node` 运行，Windows 需要 ≥ 18，推荐 LTS）：
+   - 下载：https://nodejs.org/zh-cn/download （或 https://nodejs.org/en/download/prebuilt-installer ），选
+     **Windows Installer (.msi)** 的 **LTS** 版本。
+   - 安装：双击 `.msi`，一路默认（会自动把 `node` 加到 PATH）。完成后**重开一个终端**再测，避免 PATH 未刷新。
+   - 验证：在终端敲 `node -v`，能打印版本号（如 `v20.11.1` / `v24.19.0`）即成功。
+   - 本项目脚本**只用 Node 内置模块**（`http`/`fs`/`path`/`child_process`/`WebSocket`），**无需 `npm install`**，
+     所以不必装全局依赖；若上面验证通过，无需额外 `npm` 操作。
+
+3. **安装 .NET 6 SDK**（用来编译 `audio-tool` 里的两个音频工具，仅 Windows 需要）：
+   - 下载：https://dotnet.microsoft.com/download/dotnet/6.0 ，选 **Windows x64** 的 **SDK 6.0.4xx**。
+     （点击右侧“所有 .NET 6.0 下载”→ 找到“SDK 6.0.xxx”→ 下载 `dotnet-sdk-6.0.xxx-win-x64.exe`。）
+     > 若你的电脑已装过 SDK，可先 `dotnet --list-sdks` 确认是否已有 **6.0**；直接装 6.0 即可，装更高版本（如 8.0）也能编译本项目。
+   - 安装：双击 `.exe`，默认路径一般是 `C:\Program Files\dotnet`，一路下一步。装完**重开终端**。
+   - 验证：`dotnet --version` 能打印 `6.0.xxx` 即成功；`dotnet --list-sdks` 能列出 6.0.xxx。
+   - 若 `dotnet` 提示找不到：确认安装时勾选了“添加到 PATH”，或手动把 `C:\Program Files\dotnet` 加入系统环境变量 `Path`，
+     然后重启终端/电脑。
+
+4. **编译音频工具**（需要 .NET 6 SDK）：
    ```bash
    cd audio-tool && dotnet build -c Release
    cd setdev && dotnet build -c Release
    ```
    产物在 `audio-tool/bin/Release/net6.0/xiaoyou-audio.exe` 和
    `audio-tool/setdev/bin/Release/net6.0/setdev.exe`。
-3. 确认西柚客户端可以正常登录。
-4. （可选）确认 `config.json` 里的 `clientExe` 路径指向你的客户端。
+
+5. 确认西柚客户端可以正常登录。
+6. （可选）确认 `config.json` 里的 `clientExe` 路径指向你的客户端。
 
 > **无需改系统的默认麦克风/扬声器，只有西柚 App 的麦克风**走虚拟声卡（`CABLE Output`），**其他软件仍用真实麦克风/扬声器，
 > 不会把你其他声音录进去**。`config.json` 里 `useCableMicOverride: true` 已默认开启。

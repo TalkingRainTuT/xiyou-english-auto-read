@@ -60,6 +60,29 @@ const MAX_WINDOW_MS = (CFG.replayMaxMs || 25) * 1000;   // generous for 10-25s w
 if (!fs.existsSync(AUDIO)) { console.error('audio tool not found: ' + AUDIO); process.exit(1); }
 if (!fs.existsSync(CACHE)) fs.mkdirSync(CACHE, { recursive: true });
 
+// ---- Local log file ----
+// Every message printed by the script (console.log/warn/error/info) is ALSO appended to a dated log
+// in ./logs/ (e.g. logs/xiyou-auto-2026-08-29.log), so a run can be inspected after the fact even if
+// the console/terminal was closed. Set "logDir" in config.json to change the folder, or "logFile":false
+// to disable.
+const LOG_DIR = path.resolve(__dirname, CFG.logDir || 'logs');
+const LOG_FILE = CFG.logFile === false ? null : path.join(LOG_DIR, 'xiyou-auto-' + new Date().toISOString().slice(0, 10) + '.log');
+if (LOG_FILE) {
+  try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (e) {}
+  const stamp = () => new Date().toISOString();
+  function teed(kind, args) {
+    try {
+      const line = '[' + stamp() + '] [' + kind.toUpperCase() + '] ' + args.map(a => (typeof a === 'string') ? a : (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ') + '\n';
+      fs.appendFileSync(LOG_FILE, line);
+    } catch (e) {}
+  }
+  const orig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+  console.log  = (...a) => { teed('log', a);   orig.log(...a); };
+  console.warn = (...a) => { teed('warn', a);  orig.warn(...a); };
+  console.error= (...a) => { teed('error', a); orig.error(...a); };
+  console.info = (...a) => { teed('info', a);  orig.info(...a); };
+}
+
 const wait = ms => new Promise(r => setTimeout(r, ms));
 function httpGet(url) { return new Promise((res, rej) => http.get(url, r => { let b = ''; r.on('data', d => b += d); r.on('end', () => res(b)); }).on('error', rej)); }
 async function listTargets() { return JSON.parse(await httpGet(DEBUG + '/json')); }
@@ -150,6 +173,14 @@ async function detect() {
     if(w){var cur=w.list[w.listIndex]||{};return {type:'word',found:true,index:w.listIndex,total:w.list.length,text:cur.name||'',audioUrl:cur.enPronunciation||'',recording:rec(w),windowSec:10};}
     var s=find('accentDetail');
     if(s){var p=s.process||{},i=p.infoData||{},om=p.oralTypeModel||{};return {type:'sentence',found:true,index:s.seq+1,total:s.num||0,text:om.refText||i.showTxt||'',audioUrl:i.audioURL||'',recording:rec(s),windowSec:i.timeCount||15};}
+    // Homework-4 (听说同步 / 必修第一册阶段训练) is driven by paperDetail: a multi-step state machine
+    // where each step has a processTypeId (0=录音提示,1/2=播放,3=等待,4=录音作答,5=播放视频,...).
+    // Only the record step (4) actually captures audio; the rest just need to be advanced through.
+    var d=find('paperDetail');
+    if(d){var dproc=d.process||{},dod=dproc.infoData||{},dotm=dproc.oralTypeModel||{};var dstep=dproc.processTypeId;
+      var dtotal=0; try{dtotal=(d.list&&d.list[d.menuIndex]&&d.list[d.menuIndex].smallList[d.smallIndex].processList||[]).length;}catch(e){}
+      return {type:'details',found:true,sub:dproc.processTypeId,menu:d.menuIndex,index:d.seq,total:dtotal,
+        text:String(dod.showTxt||dotm.refText||'').slice(0,80),audioUrl:dod.audioURL||'',recording:rec(d),windowSec:d.totalTime||dod.timeCount||0};}
     var r=find('read');
     if(r){var cp=r.currentParagraph||{},pl=r.textParagraphList||[];var url=cp.audioUrl||(pl[0]&&pl[0].audioUrl)||'';var win=Math.ceil((cp.sectionEndTime||0)-(cp.sectionBeginTime||0));if(!win||win<10)win=(r.duration||30);return {type:'text',found:true,index:r.curIndex,total:pl.length,text:(cp.originalText||'').slice(0,60),audioUrl:url,recording:rec(r),windowSec:win};}
     var ch=find('chooseTranslateV2');
@@ -175,6 +206,9 @@ async function startRecord() {
         function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
         var w=find('readingLoudlyV2'); if(w){w.egStartRecord();return 'word';}
         var s=find('accentDetail'); if(s){s.startRecord();return 'sentence';}
+        // paperDetail (homework-4): the record step (processTypeId 4) — the app's readList() may have
+        // already started egStartRecord(); start it again only if not already recording.
+        var d=find('paperDetail'); if(d){ if(!d.egRecordState && d.process && d.process.processTypeId===4 && typeof d.egStartRecord==='function'){ d.egStartRecord(d.process, d.process.infoData.timeCount||10); } return 'details'; }
         var r=find('read'); if(r){r.egStartRecord();return 'text';}
         return null;
       })()`);
@@ -195,6 +229,7 @@ async function recording() {
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
     var w=find('readingLoudlyV2'); if(w)return !!w.egRecordState;
     var s=find('accentDetail'); if(s)return !!s.egRecordState;
+    var d=find('paperDetail'); if(d)return !!d.egRecordState;
     var r=find('read'); if(r)return !!r.egRecordState;
     return false;
   })()`);
@@ -203,10 +238,66 @@ async function advance() {
   return evaluate(`(function(){
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
     var w=find('readingLoudlyV2'); if(w){if(typeof w.nextList==='function'){w.nextList();return 'word';}}
-    var s=find('accentDetail'); if(s){if(typeof s.goNext==='function'){s.goNext();return 'sentence';}}
+    var s=find('accentDetail');
+    if(s){
+      // accentDetail's goNext() is gated by egRecordState/spinning: it is a no-op unless the engine
+      // has finished uploading + scoring the previous sentence (its async callback clears those flags).
+      // An immediate goNext after stopRecord() therefore often does nothing -> "句子朗读无法自动结束".
+      // Loop a bounded few times, waiting for the flags to clear, then goNext() until the sentence
+      // index (seq+smallIndex) actually advances. Also handle the last sentence: nextFlow() returns
+      // early there, so we must trigger the submit via paperAnswer() (all recorded -> out()/paperAnswer()).
+      var snapIdx = s.smallIndex + ':' + s.seq;
+      var tries = 0;
+      while (tries++ < 4) {
+        if (typeof s.goNext === 'function') { s.goNext(); }
+        if ((s.smallIndex + ':' + s.seq) !== snapIdx) { return 'sentence-advanced'; }
+        // Check flags that block goNext: if still spinning/recording, wait a bit (outside this fn can't
+        // await, so we return a special marker telling the loop to wait before re-trying).
+        return 'sentence-pending';
+      }
+      return 'sentence-advanced';
+    }
+    var d=find('paperDetail');
+    if(d){
+      // Homework-4 paperDetail multi-step machine. Non-record steps (processTypeId != 4) advance via
+      // goNext(). The record step (4) is special: after processItem() replayed the model audio and
+      // stopped the record, the app's goNext() sets saveRecordAnswer and awaitRecordSave() waits for the
+      // async upload to clear it, then calls nextFlow(). Repeated goNext() while loading/saveRecordAnswer
+      // is still set can leave 'loading' stuck true (which then gates goNext and stalls the exercise).
+      // So for a record step we do NOT nudge goNext(); we unstick 'loading' when it's clearly finished
+      // (saveRecordAnswer cleared + a score already recorded) and let nextFlow() advance.
+      var dpt = d.process ? d.process.processTypeId : null;
+      if (dpt === 4) {
+        if (d.loading && !d.saveRecordAnswer && (d.answerData||[]).length > 0) { d.loading = false; }
+        return 'details-record';
+      }
+      if (typeof d.goNext === 'function') { d.goNext(); }
+      return 'details';
+    }
     var r=find('read'); if(r){if(typeof r.handleNext==='function'){r.handleNext();return 'text';}}
     var ch=find('chooseTranslateV2'); if(ch){if(typeof ch.nextList==='function'){ch.nextList();return 'choice';}}
     return null;
+  })()`);
+}
+// After the LAST recorded sentence, accentDetail's goNext/nextFlow() returns early and does not submit.
+// Trigger the submit directly: if every sentence has been recorded (answerList length == total) the
+// component is in the "submit" state and paperAnswer() posts the result. Returns true if submit fired.
+async function submitSentence() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var s=find('accentDetail'); if(!s) return false;
+    var total=(s.answerLength||0);
+    var done=(s.answerList||[]).length;
+    var isLastSmall=(s.questions && s.questions.smallList)
+      ? (s.smallIndex+1 === s.questions.smallList.length && s.seq+1 === s.questions.smallList[s.smallIndex].processList.length)
+      : false;
+    if (!isLastSmall) return false;                       // not the last sentence yet -> nothing to submit
+    if (typeof s.paperAnswer === 'function' && s.answerList && s.answerList.length > 0) {
+      s.spinning = true;
+      s.paperAnswer();
+      return true;
+    }
+    return false;
   })()`);
 }
 // Auto-enter a runnable exercise from a list screen (the user lands on these when they open homework).
@@ -298,9 +389,56 @@ async function stopRecord() {
         return true;
       }
       var s=find('accentDetail'); if(s&&s.egRecordState){if(typeof s.stop==='function'){s.stop();}else if(typeof s.stopRecord==='function'){s.stopRecord();}return true;}
+      var d=find('paperDetail'); if(d&&d.egRecordState){if(typeof d.stop==='function'){d.stop();}else if(d.EngineEvaluat&&typeof d.EngineEvaluat.stopRecord==='function'){d.EngineEvaluat.stopRecord();}return true;}
       var r=find('read'); if(r&&r.egRecordState){if(typeof r.stopRecord==='function'){r.stopRecord();}else{try{r.EngineEvaluat&&r.EngineEvaluat.stopRecord();}catch(e){}}return true;}
     }catch(e){}
     return false;
+  })()`);
+}
+
+// paperDetail record step helper: ensure the record window is open (call egStartRecord if needed).
+async function ensureRecordStarted() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('paperDetail'); if(!d) return false;
+    if(!d.egRecordState && d.process && d.process.processTypeId===4 && typeof d.egStartRecord==='function'){
+      d.egStartRecord(d.process, d.process.infoData.timeCount||10);
+      return true;
+    }
+    return !!d.egRecordState;
+  })()`);
+}
+
+// paperDetail record step: the reference audio for what to say. For the record step (type 4) the
+// model audio isn't on the record process itself; it lives on the preceding 播放原文/播放题干 step
+// (processTypeId 1/2) in the same smallList. We fetch that step's audioURL. Returns a cached mp3 path
+// or null.
+async function detailsAudio() {
+  const url = await evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('paperDetail'); if(!d) return null;
+    var menu=d.list[d.menuIndex], sl=menu.smallList[d.smallIndex];
+    // prefer the nearest preceding step with an audioURL (播放题干/播放原文/播放视频)
+    for(var i=d.seq-1; i>=0; i--){ var x=sl.processList[i]; var u=x.infoData&&x.infoData.audioURL; if(u) return u; }
+    // fall back to the record step's own info
+    var cur=sl.processList[d.seq]; return (cur.infoData&&cur.infoData.audioURL)||null;
+  })()`);
+  if (!url) return null;
+  const key = slug('details_' + url);
+  return ensureAudio('details_' + key, url);
+}
+
+// When paperDetail's save-upload flow stalls (loading stuck true after a record), force the step
+// forward with nextFlow(). Returns true if it advanced. Safe no-op if component gone.
+async function forceDetailsNext() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('paperDetail'); if(!d) return true;   // gone -> treat as advanced
+    var before = d.menuIndex + ':' + d.smallIndex + ':' + d.seq;
+    d.loading = false;                                // unstick the save-wait spinner
+    if (typeof d.nextFlow === 'function') d.nextFlow();
+    var after = d.menuIndex + ':' + d.smallIndex + ':' + d.seq;
+    return (before !== after);
   })()`);
 }
 
@@ -318,12 +456,31 @@ async function processItem() {
     return { ok: true };
   }
 
-  // Cache key must be per-WORD (text + url hash), NOT per index: the same index in a different
-  // exercise is a different word, and a stale "word_0.mp3" from a previous unit would replay the
-  // wrong pronunciation -> the engine hears a different word -> score ~0. Keying by text+url hash
-  // guarantees each word's correct audio is replayed (fixes word-reading scores of 0).
-  const audioKey = slug(snap.text).slice(0, 40) + '_' + hashUrl(snap.audioUrl);
-  const audio = await ensureAudio(snap.type + '_' + audioKey, snap.audioUrl);
+  // Homework-4 (paperDetail) multi-step flow. Only the record step (processTypeId 4) captures audio;
+  // other steps (0/1/2/3/5/9 = 录音提示/播放/等待/视频) just need to be advanced through via goNext().
+  if (snap.type === 'details') {
+    if (snap.sub !== 4) {
+      console.log('   [details] step type ' + snap.sub + ' (play/wait/prompt) — skipping record.');
+      return { ok: true, skipRecord: true };
+    }
+    // Record step: the app's readList() already calls egStartRecord() when the step loads, so we may
+    // already be recording. Ensure the record window is open, replay the model audio into the mic,
+    // then force-stop so the engine scores it and msgHandle clears saveRecordAnswer.
+    const p = await ensureRecordStarted();
+    if (!p) return { ok: false, reason: 'record not started' };
+    await wait(700);
+    // Replay the reference audio (need an audio url for the record step — see fetchDetailsAudio below).
+    const daudio = await detailsAudio();
+    if (daudio) { await playAudio(daudio); await playAudio(daudio); console.log('   [details] replayed model audio.'); }
+    await wait(600);
+    await stopRecord();
+    const end = Date.now() + 2500;
+    while ((await recording()) && Date.now() < end) { await wait(1000); }
+    console.log('   [details] record ended (recording=' + (await recording()) + ')');
+    return { ok: true, record: true };
+  }
+
+
   if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
 
   const winSec = (snap.windowSec || 10);
@@ -339,12 +496,10 @@ async function processItem() {
     // Article: play the full audio once (it IS the whole paragraph reading), then stop.
     await playAudio(audio); plays = 1;
   } else {
-    // Word/sentence — deterministic fast rhythm per the user's spec:
-    //   start recording -> play the correct audio TWICE (~2-4s) -> pause ~0.8s -> stop -> next.
-    // No waiting for the app's long countdown.
+    // Word/sentence — deterministic fast rhythm: play the correct audio ONCE (efficiency), then
+    // a short pause, then FORCE-STOP. No waiting for the app's long countdown.
     if (first) await wait(800);                    // small warm-up only on the very first word
-    await playAudio(audio);
-    await playAudio(audio); plays = 2;
+    await playAudio(audio); plays = 1;
     await wait(800);                                // "播完停一秒" — let the app capture the tail, then switch
   }
   // Force-stop so the engine finalizes and egRecordState clears, then a short grace wait.
@@ -376,7 +531,9 @@ async function main() {
         await wait(1200);
         continue;
       }
-      if (snap.recording) { console.log('currently recording; waiting...'); await wait(1500); continue; }
+      // Let paperDetail record steps (sub===4) through even though they auto-start recording:
+      // processItem() forces them (replay + stop). Other recording states just wait.
+      if (snap.recording && !(snap.type === 'details' && snap.sub === 4)) { console.log('currently recording; waiting...'); await wait(1500); continue; }
       const key = snap.type + ':' + snap.index;
       if (lastKey === key) { worstSame++; } else { worstSame = 0; lastKey = key; }
       if (worstSame >= 3) { console.log('no progress for 3 rounds (idx=' + snap.index + '); stopping to avoid a loop.'); break; }
@@ -386,7 +543,38 @@ async function main() {
       if (!r.ok) { console.log('   !! ' + r.reason); break; }
       // Advance to the next item (for text this also submits the last paragraph).
       // If the component is already gone (submitted/navigated), advance() is a safe no-op.
-      await advance();
+      const adv = await advance();
+      // accentDetail: goNext may be a no-op while the engine's async callback hasn't cleared
+      // egRecordState/spinning yet. Wait and retry until the sentence index actually moves.
+      if (snap.type === 'sentence' && adv === 'sentence-pending') {
+        for (let w = 0; w < 12; w++) {
+          await wait(1000);
+          const s2 = await detect();
+          if (!s2.found || s2.recording) continue;               // still busy
+          if ((s2.index) !== snap.index) break;                  // advanced
+          // reached the last recorded index and can't advance further -> submit the exercise
+          if (w >= 5) {
+            const sub = await submitSentence();
+            if (sub) console.log('   last sentence recorded; triggered submit.');
+            break;
+          }
+          const a2 = await advance();
+          if (a2 === 'sentence-advanced') break;
+        }
+      }
+      // paperDetail record step (sub 4): the app's save-upload flow advances on its own once the score
+      // is uploaded. If 'loading' stayed stuck (a race from rapid goNext), unstick it and nudge nextFlow.
+      if (snap.type === 'details' && snap.sub === 4) {
+        for (let w = 0; w < 10; w++) {
+          await wait(1000);
+          const s2 = await detect();
+          if (!s2.found) break;
+          if ((s2.menu !== snap.menu) || (s2.index !== snap.index)) break;   // advanced (or moved menu)
+          // stuck: force the step forward (recording already saved)
+          const st = await forceDetailsNext();
+          if (st) { console.log('   [details] record step stuck; forced nextFlow.'); break; }
+        }
+      }
       await wait(700);
       if (done >= n) break;
     }
@@ -427,7 +615,7 @@ async function main() {
             await wait(1200);
             continue;
           }
-          if (snap.recording) {
+          if (snap.recording && !(snap.type === 'details' && snap.sub === 4)) {
             stuckRec++;
             if (stuckRec >= 30) {   // ~45s of "recording" with no progress -> force-stop once
               console.log('   [watch] recording stuck; force-stopping...');
@@ -440,7 +628,23 @@ async function main() {
           stuckRec = 0;
           if (snap.type === 'word' || snap.type === 'text') readDone = true;   // reading done -> next time on unitWordListV2 open choice
           await processItem();
-          await advance();
+          const adv = await advance();
+          // accentDetail: goNext may no-op until the engine's async callback clears egRecordState/spinning.
+          if (snap.type === 'sentence' && adv === 'sentence-pending') {
+            for (let w = 0; w < 12; w++) {
+              await wait(1000);
+              const s2 = await detect();
+              if (!s2.found || s2.recording) continue;
+              if (s2.index !== snap.index) break;                 // advanced
+              if (w >= 5) {                                       // last recorded index -> submit exercise
+                const sub = await submitSentence();
+                if (sub) console.log('   [watch] last sentence recorded; triggered submit.');
+                break;
+              }
+              const a2 = await advance();
+              if (a2 === 'sentence-advanced') break;
+            }
+          }
           // After completing a runnable exercise it often returns to a list screen. Cooldown all
           // auto-entering so it doesn't instantly re-open the just-finished exercise (review loop).
           cooldownUntil = Date.now() + 12000;

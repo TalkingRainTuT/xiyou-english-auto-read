@@ -9,6 +9,7 @@
   "playDevice": "CABLE Input",
   "audioToolExe": "audio-tool/bin/Release/net6.0/xiaoyou-audio.exe",
   "cacheDir": "audio-cache",
+  "logDir": "logs",
   "replayMaxMs": 12000,
   "useCableMicOverride": true,
   "cableMicDevice": "CABLE Output",
