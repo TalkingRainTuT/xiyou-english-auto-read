@@ -347,25 +347,29 @@ async function enterFromList(kind) {
     var readDone=${JSON.stringify(rd)};
     if(kind==='accentList'){ var a=find('accentList'); if(a&&a.list&&a.list.length&&typeof a.detail==='function'){a.detail(0);return 'accentList->detail';} }
     if(kind==='unitWordListV2'){
-      // On this group screen there are two parts: 朗读单词 (reading) and 看义选词 (choice).
-      // Only auto-open a part whose action is "去完成" (not yet done). If a part is already
-      // done it shows "再做一次" — we skip it so we never redo / loop.
-      function clickRow(label){
+      // 该项作业(作业详情)的内容包含两部份：朗读单词 + 看义选词。直接检测各部分按钮是
+      // "再做一次"(已完成)还是"去完成"(未完成)：只点"去完成"。先做"朗读单词"，做完(返回本页后)
+      // 接着做"看义选词"，两项都"再做一次"则整项完成 -> done-or-none。
+      function partBtn(label){
         var row=[...document.querySelectorAll('*')].find(function(e){var t=(e.innerText||'').trim();return t===label&&e.children.length===0;});
-        if(!row) return false;
-        var card=row;for(var i=0;i<4&&card;i++){card=card.parentElement;if(card){
+        if(!row) return null;
+        var card=row;
+        for(var i=0;i<6&&card;i++){ card=card.parentElement; if(card){
           var b=card.querySelector('.btn')||[...card.querySelectorAll('div,span,button')].find(function(x){var t=(x.innerText||'').trim();return t==='去完成'||t==='再做一次';});
-          if(b){
-            var bt=(b.innerText||'').trim();
-            if(bt!=='去完成') return false;   // already done -> skip to avoid redo/loop
-            b.click(); return true;
-          }
+          if(b) return b;
         }}
-        return false;
+        return null;
       }
-      if(readDone){ if(clickRow('看义选词')) return 'unitWordListV2->choice'; }
-      else { if(clickRow('朗读单词')) return 'unitWordListV2->read'; }
-      return 'unitWordListV2->done-or-none';   // no not-done part -> do nothing (no loop)
+      function openNotDone(label, ret){
+        var b=partBtn(label);
+        if(b && (b.innerText||'').trim()==='去完成'){ b.click(); return ret; }
+        return null;
+      }
+      var r=openNotDone('朗读单词','unitWordListV2->read');
+      if(r) return r;
+      var c=openNotDone('看义选词','unitWordListV2->choice');
+      if(c) return c;
+      return 'unitWordListV2->done-or-none';   // 两部分都已"再做一次" -> 整项完成
     }
     if(kind==='bagList'){
       // 作业四(听说同步) 的详情列表: click 再做一次 -> paperScore, then 重做 -> re-enter paperDetail.
@@ -595,7 +599,10 @@ async function dubStart() {
     var st=d._data&&d._data.egRecordState;
     if(!st){
       var eng=d.EngineEvaluat;
+      // 配音需与视频同步：先播视频，再依次尝试多种启动录音的方式。
+      if(typeof d.videoStart==='function'){ try{ d.videoStart(); }catch(e){} }
       if(eng && typeof eng.startRecord==='function'){ try{ eng.startRecord(); }catch(e){} }
+      else if(typeof d.recordAudio==='function'){ try{ d.recordAudio(); }catch(e){} }
       else if(typeof d.egStartRecord==='function'){ try{ d.egStartRecord(); }catch(e){} }
     }
     return !!(d._data&&d._data.egRecordState);
