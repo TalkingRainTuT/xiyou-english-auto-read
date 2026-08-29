@@ -255,6 +255,11 @@ async function chooseAnswer() {
 }
 
 function slug(w) { return (w || '').trim().replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 60); }
+function hashUrl(u) {   // short stable hash of the audio url so each word's file is distinct
+  let h = 0; const s = String(u || '');
+  for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; }
+  return h.toString(36);
+}
 function cachePath(key) { return path.join(CACHE, slug(key) + '.mp3'); }
 async function ensureAudio(key, url) {
   if (!url) return null;
@@ -313,7 +318,12 @@ async function processItem() {
     return { ok: true };
   }
 
-  const audio = await ensureAudio(snap.type + '_' + snap.index, snap.audioUrl);
+  // Cache key must be per-WORD (text + url hash), NOT per index: the same index in a different
+  // exercise is a different word, and a stale "word_0.mp3" from a previous unit would replay the
+  // wrong pronunciation -> the engine hears a different word -> score ~0. Keying by text+url hash
+  // guarantees each word's correct audio is replayed (fixes word-reading scores of 0).
+  const audioKey = slug(snap.text).slice(0, 40) + '_' + hashUrl(snap.audioUrl);
+  const audio = await ensureAudio(snap.type + '_' + audioKey, snap.audioUrl);
   if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
 
   const winSec = (snap.windowSec || 10);
