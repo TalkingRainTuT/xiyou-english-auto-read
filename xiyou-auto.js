@@ -73,16 +73,60 @@ async function pickTarget() {
 let cdp;
 async function client() {
   if (cdp) return cdp;
-  const t = await pickTarget();
+  let t = null;
+  for (let i = 0; i < 20 && !t; i++) {           // wait for the client/app iframe to come up fresh
+    try { t = await pickTarget(); } catch (_) { t = null; }
+    if (!t) await wait(1000);
+  }
   if (!t) throw new Error('no app target — is the client running with --remote-debugging-port?');
   cdp = await connect(t.webSocketDebuggerUrl);
   await cdp.call('Runtime.enable');
+  // Grant microphone permission so the app can record without a prompt (first-run fix).
+  try { await cdp.call('Browser.grantPermissions', { permissions: ['audioCapture'], origin: APP_PREFIX }); } catch (e) {
+    try { await cdp.call('Browser.grantPermissions', { permissions: ['audioCapture', 'microphone'], origin: APP_PREFIX }); } catch (e2) {}
+  }
   return cdp;
 }
 async function evaluate(code) {
   const r = await cdp.call('Runtime.evaluate', { expression: code, returnByValue: true, awaitPromise: true });
   if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
   return r.result && r.result.value;
+}
+
+// Non-invasive audio routing: we do NOT change the OS default mic / speaker (other apps are
+// unaffected). Instead we inject a getUserMedia override into the Xiyou page so that the app's
+// microphone records from the virtual cable (CABLE Output) only. We play the downloaded correct
+// pronunciation to CABLE Input all along, which surfaces on CABLE Output = the app's mic.
+// This way no system audio is captured and other apps keep their real devices.
+async function ensureCableMic() {
+  if (!CFG.useCableMicOverride) return;   // disabled -> caller handles defaults manually
+  const cableName = CFG.cableMicDevice || 'CABLE Output';
+  // 1) resolve the cable device id from the page's enumerateDevices
+  let cableId = null;
+  try {
+    cableId = await evaluate(`(async function(){var ds=await navigator.mediaDevices.enumerateDevices();var m=ds.filter(function(d){return d.kind==='audioinput' && ${JSON.stringify(cableName)}.toLowerCase()===(d.label||'').toLowerCase()|| (d.label||'').toLowerCase().indexOf(${JSON.stringify(cableName).toLowerCase()})>=0;});return m.length?m[0].deviceId:null;})()`);
+  } catch (e) { cableId = null; }
+  if (!cableId) { console.log('   [audio] cable mic override: ' + cableName + ' not found; skipping.'); return; }
+  // 2) wrap getUserMedia to force the audio input to the cable device
+  const script = `
+    (function(){
+      var cableId = ${JSON.stringify(cableId)};
+      var md = navigator.mediaDevices;
+      if (!md || md.__cableWrap) return;
+      var orig = md.getUserMedia.bind(md);
+      md.getUserMedia = function(constraints){
+        var c = constraints || {};
+        if (c.audio === undefined || c.audio === true) { c = { audio: { deviceId: { exact: cableId } } }; }
+        else if (c.audio && typeof c.audio === 'object') { c.audio.deviceId = { exact: cableId }; }
+        return orig(c);
+      };
+      md.__cableWrap = true;
+    })()
+  `;
+  await evaluate(script);
+  // 3) persist across reloads
+  try { await cdp.call('Page.addScriptToEvaluateOnNewDocument', { source: script }); } catch (e) {}
+  console.log('   [audio] cable mic override active -> ' + cableName);
 }
 
 async function detect() {
@@ -99,14 +143,31 @@ async function detect() {
     return {type:null,found:false};
   })()`);
 }
+// Start the record window for whichever reading component is open. The app's audio engine
+// (engine.js) connects a WebSocket lazily; on a cold start the first egStartRecord can throw
+// "Failed to construct 'WebSocket': The URL 'en.word.score?...' is invalid." (base URL not ready).
+// We retry a few times with a short wait so the engine's websocket initializes.
 async function startRecord() {
-  return evaluate(`(function(){
-    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
-    var w=find('readingLoudlyV2'); if(w){w.egStartRecord();return 'word';}
-    var s=find('accentDetail'); if(s){s.startRecord();return 'sentence';}
-    var r=find('read'); if(r){r.egStartRecord();return 'text';}
-    return null;
-  })()`);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await evaluate(`(function(){
+        function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+        var w=find('readingLoudlyV2'); if(w){w.egStartRecord();return 'word';}
+        var s=find('accentDetail'); if(s){s.startRecord();return 'sentence';}
+        var r=find('read'); if(r){r.egStartRecord();return 'text';}
+        return null;
+      })()`);
+    } catch (e) {
+      const msg = e && e.message ? e.message : String(e);
+      if (/WebSocket|en\.word\.score/i.test(msg)) {
+        console.log('   engine WebSocket not ready yet; retrying startRecord (' + (attempt + 1) + '/5)...');
+        await wait(1200);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error('could not start record after retries (engine websocket did not initialize)');
 }
 async function recording() {
   return evaluate(`(function(){
@@ -164,36 +225,34 @@ async function processItem() {
   const winSec = (snap.windowSec || 10);
   await startRecord();
   await wait(600);
+  // Feed the correct pronunciation into the mic by replaying the audio a bounded number of
+  // passes, then FORCE-STOP the recording so we don't wait for the app's (long) countdown and
+  // so egRecordState clears (which lets goNext/handleNext advance -> fixes sentence repeating).
+  const start = Date.now();
   let plays = 0;
   if (snap.type === 'text') {
-    // Article: play the full audio once (it IS the whole paragraph reading), then FORCE-STOP
-    // so the engine finalizes (its countdown only ticks duration and never ends on its own).
-    // After stop, wait a bounded time for egRecordState to flip, but do NOT block on it —
-    // advance()/handleNext() triggers the submit for the last paragraph.
-    let t0 = Date.now();
-    while (Date.now() - t0 < Math.min(winSec, 240) * 1000 && plays < 1) {
+    // Article: play the full audio once (it IS the whole paragraph reading), then stop.
+    while (Date.now() - start < Math.min(winSec, 240) * 1000 && plays < 1) {
       await playAudio(audio); plays++;
     }
-    await stopRecord();
-    const endTarget = Date.now() + 15000;   // bounded wait for state flip
-    while ((await recording()) && Date.now() < endTarget) { await wait(1000); }
   } else {
-    // Word / sentence: the app's own countdown ends the window naturally; we replay audio
-    // until the recording flips false (no forced stop, keeps the score high).
-    const replayForMs = Math.min(winSec, 30) * 1000;
-    let t0 = Date.now();
-    while ((await recording()) && Date.now() - t0 < replayForMs && plays < 20) {
+    // Word/sentence: replay a few passes (they're short), then stop. Keeps score high w/o waiting.
+    const replayForMs = Math.min(winSec, 25) * 1000;
+    while (Date.now() - start < replayForMs && plays < 12) {
       await playAudio(audio); plays++;
     }
-    const endTarget = Date.now() + (winSec + 10) * 1000;
-    while ((await recording()) && Date.now() < endTarget) { await wait(1000); }
   }
+  // Force-stop so the engine finalizes and egRecordState clears, then a short grace wait.
+  await stopRecord();
+  const end = Date.now() + 8000;
+  while ((await recording()) && Date.now() < end) { await wait(1000); }
   console.log('   record window ended (replays=' + plays + ', recording=' + (await recording()) + ')');
   return { ok: true };
 }
 
 async function main() {
   await client();
+  await ensureCableMic();
   const cmd = process.argv[2] || 'run';
   if (cmd === 'status') { console.log(JSON.stringify(await detect(), null, 2)); return; }
   if (cmd === 'run' || cmd === 'runall') {

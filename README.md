@@ -66,16 +66,12 @@
    ```
    产物在 `audio-tool/bin/Release/net6.0/xiaoyou-audio.exe` 和
    `audio-tool/setdev/bin/Release/net6.0/setdev.exe`。
-3. **设置默认音频设备**（一键）：
-   ```powershell
-   audio-tool\setdev\bin\Release\net6.0\setdev.exe  capture "CABLE Output"
-   audio-tool\setdev\bin\Release\net6.0\setdev.exe  render  "CABLE Input"
-   ## 验证
-   audio-tool\setdev\bin\Release\net6.0\setdev.exe  default
-   # 应显示 default capture (mic) = CABLE Output ...  default render = CABLE Input ...
-   ```
-4. 确认西柚客户端可以正常登录。
-5. （可选）确认 `config.json` 里的 `clientExe` 路径指向你的客户端。
+3. 确认西柚客户端可以正常登录。
+4. （可选）确认 `config.json` 里的 `clientExe` 路径指向你的客户端。
+
+> **无需改系统的默认麦克风/扬声器**：脚本通过 CDP 往西柚页面注入 `getUserMedia` 覆盖，
+> 让**只有西柚 App 的麦克风**走虚拟声卡（`CABLE Output`），**其他软件仍用真实麦克风/扬声器，
+> 不会把你其他声音录进去**。`config.json` 里 `useCableMicOverride: true` 已默认开启。
 
 ## 使用
 
@@ -101,8 +97,9 @@ node xiyou-auto.js watch     # 持续循环：自动识别并朗读任何打开�
 
 ## 常见问题
 
-- **提示“麦克风初始化失败”**：确认默认麦克风已设为 `CABLE Output`；必要时重启客户端。
-- **某个词得分不高**：脚本用的是组件给的 `enPronunciation` 权威直链，通常没问题；
+- **提示“麦克风初始化失败”**：脚本会自动给西柚页面授予麦克风权限并注入 `getUserMedia` 覆盖。
+  若仍失败，确认 VB-Cable 已装、`CABLE Output` 设备存在；必要时重启客户端。
+- **某个词得分不高**：脚本用的是组件给的 `enPronunciation`/`audioURL` 权威直链，通常没问题；
   个别词发音文件很短，多听几遍即可，不影响完成。
 - **`.bat` / `.ps1` 打开报“找不到文件”**：`xiyou-launch.ps1` 必须保持 **UTF-8 带 BOM**（本仓库已配好），
   `config.json` 必须是 **UTF-8 不带 BOM**（Node 的 `JSON.parse` 遇到 BOM 会报错）。重新编辑时注意区分：`.ps1` 用
@@ -111,7 +108,12 @@ node xiyou-auto.js watch     # 持续循环：自动识别并朗读任何打开�
   课文朗读」的练习界面（出现 `1/10`、`1/83` 类似进度）。启动器默认是 `watch` 模式，会持续探测，
   重新打开作业即自动续读；若用了 `run`/`runall` 且中途退出，重跑 `node xiyou-auto.js runall`
   或 `watch` 即可继续。
-- **课文朗读(整段)较慢**：整段课文的录音窗口有 1~2 分钟，属正常，请耐心等待。
+- **首次启动报 `WebSocket: en.word.score ... is invalid`**：这是评测引擎初始化竞态，脚本已自动
+  重试等待引擎就绪（最多 5 次）；若偶发失败，重跑一次即可。
+- **会不会把其他软件的声音也录进去？** 不会。脚本只让西柚 App 的麦克风用虚拟声卡（`getUserMedia`
+  覆盖），其他软件仍用真实麦克风/扬声器，不影响你同时做别的事。
+- **课文朗读(整段)较慢**：整段课文的录音窗口有 1~2 分钟（要录完整段），属正常；单词/句子现在
+  会用“播几遍→主动停止→切下一题”，不再等满整个倒计时。
 
 ## 技术栈
 

@@ -41,32 +41,24 @@ if (-not (Test-Port)) {
   Write-Host 'Client already on the debug port.' -ForegroundColor Green
 }
 
-Write-Host 'In the Xiyou window, manually open the homework (Word / Text reading).' -ForegroundColor Cyan
-Write-Host 'This launcher will auto-start reading once the read-aloud screen is detected.' -ForegroundColor Cyan
+Write-Host 'In the Xiyou window, manually open the homework (Word / Sentence / Text reading).' -ForegroundColor Cyan
+Write-Host 'If not logged in, log in first; watch mode waits here until a reading screen appears.' -ForegroundColor Cyan
 
-# 2) Poll until a read-aloud exercise is open (any of the 3 types).
-$found = $false
-for ($i = 0; $i -lt 120; $i++) {
-  try {
-    $status = & $Node $AutoScript status 2>$null
-    if ($status -match '"found"\s*:\s*true') { $found = $true }
-  } catch {}
-  if ($found) { break }
-  Start-Sleep -Seconds 2
-}
-
-if (-not $found) {
-  Write-Host 'Read-aloud screen not detected. Make sure the homework (Word / Sentence / Text reading) is open in the Xiyou window.' -ForegroundColor Red
-  Write-Host 'You can also run:  node xiyou-auto.js watch' -ForegroundColor DarkGray
-  exit 1
-}
-
-# 3) Auto-read. Default is `watch`: it keeps looping forever and resumes any exercise that
-#    is opened (so pausing / re-entering does not require restarting the launcher).
-Write-Host 'Read-aloud screen detected. Starting auto-read (watch mode)...' -ForegroundColor Green
+# 2) Auto-read. `watch` is the resume-safe infinite loop: it waits for the client to be up,
+#    logs-in readiness, then auto-reads any read-aloud exercise when it opens. This is the most
+#    robust path for a fresh install (the user may still be logging in / navigating).
+Write-Host 'Starting auto-read (watch mode — waits for the reading screen)...' -ForegroundColor Green
 if ($Auto) {
   & $Node $AutoScript watch
 } elseif ($Run -gt 0) {
+  # For explicit -Run N, wait (bounded) until a reading exercise appears, then run N.
+  $found = $false
+  for ($i = 0; $i -lt 120; $i++) {
+    try { $status = & $Node $AutoScript status 2>$null; if ($status -match '"found"\s*:\s*true') { $found = $true } } catch {}
+    if ($found) { break }
+    Start-Sleep -Seconds 2
+  }
+  if (-not $found) { Write-Host 'Reading screen not detected yet. Run:  node xiyou-auto.js watch' -ForegroundColor Red; exit 1 }
   & $Node $AutoScript run $Run
 } else {
   & $Node $AutoScript watch
