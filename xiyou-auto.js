@@ -328,37 +328,30 @@ async function processItem() {
 
   const winSec = (snap.windowSec || 10);
   const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
-  if (first) {
-    await wait(1500);   // engine may not be ready on the very first record (WebSocket up) -> longer warm-up
-  }
   await startRecord();
-  await wait(first ? 1200 : 600);
+  await wait(first ? 700 : 300);
   didFirstRecord = true;
   // Feed the correct pronunciation into the mic by replaying the audio a bounded number of
   // passes, then FORCE-STOP the recording so we don't wait for the app's (long) countdown and
   // so egRecordState clears (which lets goNext/handleNext advance -> fixes sentence repeating).
-  const start = Date.now();
   let plays = 0;
   if (snap.type === 'text') {
     // Article: play the full audio once (it IS the whole paragraph reading), then stop.
-    while (Date.now() - start < Math.min(winSec, 240) * 1000 && plays < 1) {
-      await playAudio(audio); plays++;
-    }
+    await playAudio(audio); plays = 1;
   } else {
-    // Word/sentence: replay a few passes (they're short), then stop. Keeps score high w/o waiting.
-    // On the FIRST record give more passes / a longer window so the engine captures the correct
-    // pronunciation robustly (the engine is cold on the very first word).
-    const replayForMs = Math.min(winSec, first ? 60 : 25) * 1000;
-    const maxPlays = first ? 18 : 12;
-    while (Date.now() - start < replayForMs && plays < maxPlays) {
-      await playAudio(audio); plays++;
-    }
+    // Word/sentence — deterministic fast rhythm per the user's spec:
+    //   start recording -> play the correct audio TWICE (~2-4s) -> pause ~0.8s -> stop -> next.
+    // No waiting for the app's long countdown.
+    if (first) await wait(800);                    // small warm-up only on the very first word
+    await playAudio(audio);
+    await playAudio(audio); plays = 2;
+    await wait(800);                                // "播完停一秒" — let the app capture the tail, then switch
   }
   // Force-stop so the engine finalizes and egRecordState clears, then a short grace wait.
   await stopRecord();
-  const end = Date.now() + 8000;
+  const end = Date.now() + 2500;
   while ((await recording()) && Date.now() < end) { await wait(1000); }
-  console.log('   record window ended (replays=' + plays + ', recording=' + (await recording()) + ')');
+  console.log('   record window ended (replays=3, recording=' + (await recording()) + ')');
   return { ok: true };
 }
 
