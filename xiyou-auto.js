@@ -68,17 +68,22 @@ function connect(wsUrl) {
 }
 async function pickTarget() {
   const ts = await listTargets();
-  return ts.find(t => (t.url || '').startsWith(APP_PREFIX)) || ts.find(t => t.type === 'iframe') || ts[0];
+  const app = ts.find(t => (t.url || '').startsWith(APP_PREFIX));
+  if (app) return app;
+  const iframe = ts.find(t => t.type === 'iframe');
+  if (iframe) return iframe;
+  // No real app iframe yet — do NOT attach to the shell page (file://...index.html); wait for it.
+  return ts.find(t => (t.url || '').includes('student.')) || null;
 }
 let cdp;
 async function client() {
   if (cdp) return cdp;
   let t = null;
-  for (let i = 0; i < 20 && !t; i++) {           // wait for the client/app iframe to come up fresh
+  for (let i = 0; i < 40 && !t; i++) {           // wait up to 40s for the real app iframe (not the shell page)
     try { t = await pickTarget(); } catch (_) { t = null; }
     if (!t) await wait(1000);
   }
-  if (!t) throw new Error('no app target — is the client running with --remote-debugging-port?');
+  if (!t) throw new Error('app iframe not loaded — is the client logged in / did the web content load?');
   cdp = await connect(t.webSocketDebuggerUrl);
   await cdp.call('Runtime.enable');
   // Grant microphone permission so the app can record without a prompt (first-run fix).

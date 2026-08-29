@@ -29,8 +29,6 @@ Write-Host '=== Xiyou English: auto-read launcher ===' -ForegroundColor Cyan
 # 1) Make sure the client is running with the debug port.
 if (-not (Test-Port)) {
   Write-Host 'Client not on the debug port; cleaning stale instances and starting it...' -ForegroundColor Yellow
-  # Kill any existing Xiyou processes so the freshly launched instance is the one we attach to
-  # (the app is single-instance; a stale instance without the debug flag would otherwise grab focus).
   Get-Process | Where-Object { $_.ProcessName -like '*西柚*' -or $_.ProcessName -like '*xiyou*' -or $_.Path -like '*Xiyou*' } | ForEach-Object {
     try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {}
   }
@@ -41,7 +39,16 @@ if (-not (Test-Port)) {
     Start-Sleep -Milliseconds 500
     if (Test-Port) { $up = $true; break }
   }
-  if (-not $up) { Write-Host 'Client did not start. Run this as Administrator, or open Xiyou manually and retry.' -ForegroundColor Red; exit 1 }
+  if (-not $up) {
+    Write-Host ''
+    Write-Host '==== 未能连接西柚客户端（调试端口没有起来）====' -ForegroundColor Red
+    Write-Host '请按下面步骤处理后重试：' -ForegroundColor Yellow
+    Write-Host '  1) 打开任务管理器，找到所有“西柚英语”进程并【全部结束】。' -ForegroundColor White
+    Write-Host '  2) 如果结束不掉，直接重启电脑（最彻底）。' -ForegroundColor White
+    Write-Host '  3) 重启后，确认没有手动先打开西柚，再双击本启动器。' -ForegroundColor White
+    Write-Host '-------------------------------------------------' -ForegroundColor Red
+    exit 1
+  }
   Write-Host 'Client started (with debug port).' -ForegroundColor Green
 } else {
   Write-Host 'Client already on the debug port.' -ForegroundColor Green
