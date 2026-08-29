@@ -593,7 +593,11 @@ async function dubStart() {
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
     var d=find('DubbingIndex'); if(!d) return false;
     var st=d._data&&d._data.egRecordState;
-    if(!st && typeof d.egStartRecord==='function'){ try{ d.egStartRecord(); }catch(e){} }
+    if(!st){
+      var eng=d.EngineEvaluat;
+      if(eng && typeof eng.startRecord==='function'){ try{ eng.startRecord(); }catch(e){} }
+      else if(typeof d.egStartRecord==='function'){ try{ d.egStartRecord(); }catch(e){} }
+    }
     return !!(d._data&&d._data.egRecordState);
   })()`);
 }
@@ -795,9 +799,18 @@ async function main() {
       const snap = await detect();
       if (!snap.found) { console.log('reading screen not detected; is the exercise open? (use watch to auto-wait)'); break; }
       if (snap.type === 'enter') {
-        // 只自动朗读已经打开的练习；不自动打开任何列表/作业页（不再点 再做一次/重做/去完成）。
-        console.log('   [run] 列表/作业页 (' + snap.enter + '): 不自动打开，结束。');
-        break;
+        const now = Date.now();
+        if (snap.enter === supKind && now < supUntil) { await wait(1500); continue; }
+        // 作业四三个子题全部完成 -> 不再重开 (避免循环)。
+        if ((snap.enter === 'paperScore' || snap.enter === 'bagList') && detailMenuIdx >= DETAIL_MENU_NAMES.length) {
+          console.log('   [run] 作业四 的子练习已全部完成; 停止重开。'); break;
+        }
+        console.log('[enter] auto-opening: ' + snap.enter);
+        const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
+        const r = snap.enter === 'paperScore' ? ((await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
+        if (r && /done-or-none|fallback/.test(r)) { supKind = snap.enter; supUntil = Date.now() + 30000; console.log('   "' + snap.enter + '" 无未完成可自动做; 30s内不再重开。'); }
+        else if (r && /->redo|->detail|->read|->choice|->redo/.test(r)) { supKind = null; supUntil = 0; }
+        await wait(1200); continue;
       }
       // Let paperDetail record steps (sub===4) through even though they auto-start recording:
       // processItem() forces them (replay + stop). Other recording states just wait.
@@ -869,24 +882,38 @@ async function main() {
   if (cmd === 'watch') {
     console.log('watch mode: auto-reads any read-aloud exercise that opens. Waiting...');
     let idle = 0, errCount = 0, stuckRec = 0, suppressKind = null, suppressUntil = 0, cooldownUntil = 0;
-    let onList = false;
     for (;;) {
       try {
         const snap = await detect();
         if (snap.found) {
           idle = 0; errCount = 0;
           if (snap.type === 'enter') {
-            // 只自动朗读已经打开的练习；不自动打开任何列表/作业页（不再点 再做一次/重做/去完成）。
-            // 用户手动点进某个练习后，detect() 下一轮就会看到对应的朗读组件并自动朗读。这从根源上消除
-            // "反复自动跳转打开作业、无法停下" 的循环。
-            if (!onList) {
-              console.log('   [watch] 列表/作业页 (' + snap.enter + '): 不自动打开。请手动进入要朗读的练习。');
-              onList = true;
+            // 打开作业后，自动识别可自动完成且未完成的子作业/题目并完成；跳过已完成的；完成整份后不再重开。
+            const now = Date.now();
+            if (suppressKind === snap.enter && now < suppressUntil) { await wait(1500); continue; }
+            if (now < cooldownUntil) { await wait(1500); continue; }
+            // 作业四三个子题全部完成 -> 不再重开 (避免循环)。
+            if ((snap.enter === 'paperScore' || snap.enter === 'bagList') && detailMenuIdx >= DETAIL_MENU_NAMES.length) {
+              suppressKind = snap.enter; suppressUntil = now + 3600000;
+              console.log('   [watch] 作业四 的子练习已全部完成; 不再自动重做 (suppress 1h).');
+              await wait(1500); continue;
             }
-            await wait(1500);
-            continue;
+            console.log('[enter] auto-opening: ' + snap.enter);
+            let res;
+            if (snap.enter === 'paperScore') {
+              const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
+              res = (await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none';
+            } else {
+              res = await enterFromList(snap.enter);
+            }
+            if (res && /done-or-none|fallback/.test(res)) {
+              suppressKind = snap.enter; suppressUntil = Date.now() + 30000;
+              console.log('   [watch] "' + snap.enter + '" 无未完成可自动做; 30s内不再重开。');
+            } else if (res && /->redo|->detail|->read|->choice|->redo/.test(res)) {
+              suppressKind = null; suppressUntil = 0;
+            }
+            await wait(1200); continue;
           }
-          onList = false;
           if (snap.recording && !(snap.type === 'details' && snap.sub === 4)) {
             stuckRec++;
             if (stuckRec >= 30) {   // ~45s of "recording" with no progress -> force-stop once
