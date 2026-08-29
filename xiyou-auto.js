@@ -140,6 +140,8 @@ async function detect() {
     if(s){var p=s.process||{},i=p.infoData||{},om=p.oralTypeModel||{};return {type:'sentence',found:true,index:s.seq+1,total:s.num||0,text:om.refText||i.showTxt||'',audioUrl:i.audioURL||'',recording:rec(s),windowSec:i.timeCount||15};}
     var r=find('read');
     if(r){var cp=r.currentParagraph||{},pl=r.textParagraphList||[];var url=cp.audioUrl||(pl[0]&&pl[0].audioUrl)||'';var win=Math.ceil((cp.sectionEndTime||0)-(cp.sectionBeginTime||0));if(!win||win<10)win=(r.duration||30);return {type:'text',found:true,index:r.curIndex,total:pl.length,text:(cp.originalText||'').slice(0,60),audioUrl:url,recording:rec(r),windowSec:win};}
+    var ch=find('chooseTranslateV2');
+    if(ch){var it=ch.list[ch.listIndex]||{};var ct=it.chooseTitleType||{};var ot=ct.optionsTypeList||[];var ci=-1;for(var oi=0;oi<ot.length;oi++){if(ot[oi].answer){ci=oi;break;}}return {type:'choice',found:true,index:ch.listIndex,total:(ch.list||[]).length,text:it.name||'',answerIndex:ci,optionCount:ot.length,recording:false};}
     return {type:null,found:false};
   })()`);
 }
@@ -184,6 +186,19 @@ async function advance() {
     var w=find('readingLoudlyV2'); if(w){if(typeof w.nextList==='function'){w.nextList();return 'word';}}
     var s=find('accentDetail'); if(s){if(typeof s.goNext==='function'){s.goNext();return 'sentence';}}
     var r=find('read'); if(r){if(typeof r.handleNext==='function'){r.handleNext();return 'text';}}
+    var ch=find('chooseTranslateV2'); if(ch){if(typeof ch.nextList==='function'){ch.nextList();return 'choice';}}
+    return null;
+  })()`);
+}
+// For the word-choice exercise: pick the correct option (the one with answer=true).
+async function chooseAnswer() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var ch=find('chooseTranslateV2');
+    if(!ch) return null;
+    var it=ch.list[ch.listIndex]||{};
+    var ot=(it.chooseTitleType||{}).optionsTypeList||[];
+    for(var i=0;i<ot.length;i++){ if(ot[i].answer){ if(typeof ch.chooseOptions==='function') ch.chooseOptions(ch.listIndex, i); return {picked:i, text:ot[i].text}; } }
     return null;
   })()`);
 }
@@ -201,7 +216,19 @@ async function ensureAudio(key, url) {
   fs.writeFileSync(f, buf);
   return f;
 }
-function playAudio(mp3) { return new Promise(res => execFile(AUDIO, ['play', PLAY_DEVICE, mp3], () => res())); }
+// Replay the audio into the loopback mic. On Windows we use the bundled xiaoyou-audio.exe
+// (plays to a virtual device, e.g. CABLE Input -> CABLE Output). For other platforms
+// (e.g. macOS with BlackHole), set "replayCmd" in config.json to a template like
+//   "afplay %f"        (play to the default output; route it into BlackHole loopback)
+//   "ffplay -nodisp -loglevel quiet -f lavfi -i %f"
+// where %f is the audio file path. The env var XIYOU_REPLAY_CMD overrides config too.
+function playAudio(mp3) {
+  const cmdTpl = process.env.XIYOU_REPLAY_CMD || CFG.replayCmd || null;
+  if (cmdTpl) {
+    return new Promise(res => execFile('sh', ['-c', cmdTpl.replace(/%f/g, mp3)], () => res()));
+  }
+  return new Promise(res => execFile(AUDIO, ['play', PLAY_DEVICE, mp3], () => res()));
+}
 
 async function stopRecord() {
   return evaluate(`(function(){
@@ -217,8 +244,18 @@ async function stopRecord() {
 
 async function processItem() {
   const snap = await detect();
-  if (!snap.found || !snap.audioUrl) return { ok: false, reason: 'no item' };
+  if (!snap.found) return { ok: false, reason: 'no item' };
   console.log(`[${snap.type}] (${snap.index}${snap.total ? '/' + snap.total : ''}) "${(snap.text || '').slice(0, 40)}"`);
+
+  // Word-choice (选词/看义选词): no mic/audio needed, just click the correct option.
+  if (snap.type === 'choice') {
+    if (snap.answerIndex < 0) { console.log('   !! no correct answer option found'); return { ok: false, reason: 'no answer' }; }
+    const picked = await chooseAnswer();
+    console.log('   picked correct option: ' + (picked ? picked.text : '?'));
+    await wait(800);
+    return { ok: true };
+  }
+
   const audio = await ensureAudio(snap.type + '_' + snap.index, snap.audioUrl);
   if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
 

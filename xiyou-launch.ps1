@@ -28,10 +28,16 @@ Write-Host '=== Xiyou English: auto-read launcher ===' -ForegroundColor Cyan
 
 # 1) Make sure the client is running with the debug port.
 if (-not (Test-Port)) {
-  Write-Host 'Client not on the debug port; starting it now...' -ForegroundColor Yellow
+  Write-Host 'Client not on the debug port; cleaning stale instances and starting it...' -ForegroundColor Yellow
+  # Kill any existing Xiyou processes so the freshly launched instance is the one we attach to
+  # (the app is single-instance; a stale instance without the debug flag would otherwise grab focus).
+  Get-Process | Where-Object { $_.ProcessName -like '*西柚*' -or $_.ProcessName -like '*xiyou*' -or $_.Path -like '*Xiyou*' } | ForEach-Object {
+    try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {}
+  }
+  Start-Sleep -Seconds 2
   Start-Process -FilePath $Exe -ArgumentList "--remote-debugging-port=$Port"
   $up = $false
-  for ($i = 0; $i -lt 50; $i++) {
+  for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 500
     if (Test-Port) { $up = $true; break }
   }

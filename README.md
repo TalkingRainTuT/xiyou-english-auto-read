@@ -113,9 +113,39 @@ node xiyou-auto.js watch     # 持续循环：自动识别并朗读任何打开�
   覆盖），其他软件仍用真实麦克风/扬声器，不影响你同时做别的事。
 - **课文朗读(整段)较慢**：整段课文的录音窗口有 1~2 分钟（要录完整段），属正常；单词/句子现在
   会用“播几遍→主动停止→切下一题”，不再等满整个倒计时。
+- **打开作业没反应**：确认你打开的是朗读（单词/句子/课文）或**选词（看义选词）**类作业。
+  脚本会自动识别这两种题型：朗读用“播正确发音→停止→切下一题”，选词自动点正确答案。两者都会自动处理。
+
+## 支持题型（自动识别）
+
+| 题型 | Vue 组件 | 做法 |
+| --- | --- | --- |
+| 单词朗读 | `readingLoudlyV2` | 回放正确发音给麦克风 → 评分 → 切下一题 |
+| 句子积累朗读 | `accentDetail` | 同上 |
+| 课文朗读(整段) | `read` | 回放整段 → 评分 → 提交 |
+| 看义选词(选词) | `chooseTranslateV2` | 读取 `optionsTypeList` 中 `answer=true` 的选项直接点选 |
+
+## Mac 适配（说明）
+
+> 本项目最初面向 Windows（西柚客户端是 `.exe`，靠 VB-Cable + .NET 音频工具回放）。
+> **CDP 自动化逻辑本身是跨平台的**（只驱动浏览器），但以下部分是平台相关、我**未在 Mac 上实测**：
+
+- **客户端**：需要西柚英语的 macOS 版本（若有），把 `config.json` 的 `clientExe` 改成它的路径，
+  启动参数改到 `clientLaunchArgs`（Mac 上可能不带 `--remote-debugging-port`，需自行确认）。
+- **虚拟声卡**：Windows 用 VB-Cable；Mac 用 **BlackHole** 或 **Loopback**（二选一，自行安装）。
+  把虚拟设备名填到 `config.json` 的 `cableMicDevice`。
+- **回放音频**：`.NET NAudio` 工具只在 Windows 跑。Mac 上改用命令行回放，例如：
+  ```json
+  "replayCmd": "afplay %f"   // 把默认输出路由进 BlackHole 回环即等价
+  ```
+  或者 `ffplay -nodisp -loglevel quiet %f`。`%f` 会被替换成音频文件路径。
+- **启动器**：`.bat`/`.ps1` 只在 Windows；Mac 直接
+  `node xiyou-auto.js watch`，自己手动打开作业。
+
+Mac 用户如能给到我可运行的 Mac 客户端和虚拟声卡，我可以进一步适配并实测；否则以上是理论适配方案，请谨慎使用。
 
 ## 技术栈
 
 - **Node.js**：CDP (Chrome DevTools Protocol) 驱动 Vue 组件，无第三方依赖。
-- **.NET 6 + NAudio**：麦克风录音与回放到指定虚拟设备。
-- **VB-Cable**：虚拟声卡回环。
+- **.NET 6 + NAudio**：麦克风录音与回放到指定虚拟设备（仅 Windows 构建时需要）。
+- **VB-Cable**：虚拟声卡回环（Windows）。Mac 用 BlackHole / Loopback。
