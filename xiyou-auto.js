@@ -352,24 +352,45 @@ async function main() {
   }
   if (cmd === 'watch') {
     console.log('watch mode: auto-reads any read-aloud exercise that opens. Waiting...');
-    let idle = 0;
+    let idle = 0, errCount = 0, stuckRec = 0;
     for (;;) {
-      const snap = await detect();
-      if (snap.found) {
-        idle = 0;
-        if (snap.type === 'enter') {
-          console.log('[enter] auto-opening: ' + snap.enter);
-          await enterFromList(snap.enter);
-          await wait(1200);
-          continue;
+      try {
+        const snap = await detect();
+        if (snap.found) {
+          idle = 0; errCount = 0;
+          if (snap.type === 'enter') {
+            console.log('[enter] auto-opening: ' + snap.enter);
+            await enterFromList(snap.enter);
+            await wait(1200);
+            continue;
+          }
+          if (snap.recording) {
+            stuckRec++;
+            if (stuckRec >= 30) {   // ~45s of "recording" with no progress -> force-stop once
+              console.log('   [watch] recording stuck; force-stopping...');
+              await stopRecord();
+              stuckRec = 0;
+            }
+            await wait(1500);
+            continue;
+          }
+          stuckRec = 0;
+          await processItem();
+          await advance();
+          await wait(700);
+        } else {
+          idle++; stuckRec = 0;
+          if (idle === 1) console.log('waiting for a reading exercise...');
+          await wait(1500);
         }
-        if (snap.recording) { await wait(1500); continue; }
-        await processItem();
-        await advance();
-        await wait(700);
-      } else {
-        idle++;
-        if (idle === 1) console.log('waiting for a reading exercise...');
+      } catch (e) {
+        // Transient errors (CDP flash, WebSocket race, etc.) must NOT kill watch — log and retry.
+        errCount++;
+        console.log('   [watch] transient error (' + errCount + '): ' + (e && e.message ? e.message : e));
+        if (/ECONNREFUSED|no app target|disconnect|closed|WebSocket/i.test(e && e.message ? e.message : String(e))) {
+          console.log('   [watch] connection lost; reconnecting...');
+          try { cdp = null; await client(); await ensureCableMic(); } catch (e2) { console.log('   [watch] reconnect failed: ' + (e2 && e2.message)); }
+        }
         await wait(1500);
       }
     }
