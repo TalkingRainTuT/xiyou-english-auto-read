@@ -60,6 +60,11 @@ const PLAY_DEVICE = CFG.playDevice || 'CABLE Input';
 const AUDIO = path.resolve(__dirname, CFG.audioToolExe || 'audio-tool/bin/Release/net6.0/xiaoyou-audio.exe');
 const CACHE = path.resolve(__dirname, CFG.cacheDir || 'audio-cache');
 const MAX_WINDOW_MS = (CFG.replayMaxMs || 25) * 1000;   // generous for 10-25s windows
+// Safety net: a single audio replay/playback must never block the loop indefinitely (one bad / huge
+// audio would otherwise stall the whole exercise). It still yields for a real, full-length playback.
+const FETCH_TIMEOUT_MS = (CFG.fetchTimeoutMs || 20000); // audio download timeout (ensureAudio)
+const REPLAY_TIMEOUT_MS = (CFG.replayTimeoutMs || 45000); // wall-clock cap for one playAudio call
+const TTS_TIMEOUT_MS = (CFG.ttsTimeoutMs || 30000);      // wall-clock cap for the PowerShell TTS render
 
 if (!fs.existsSync(AUDIO)) { console.error('audio tool not found: ' + AUDIO); process.exit(1); }
 if (!fs.existsSync(CACHE)) fs.mkdirSync(CACHE, { recursive: true });
@@ -389,12 +394,20 @@ async function ensureAudio(key, url) {
   if (!url) return null;
   const f = cachePath(key);
   if (fs.existsSync(f) && fs.statSync(f).size > 0) return f;
-  const r = await fetch(url);
-  if (!r.ok) return null;
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length === 0) return null;
-  fs.writeFileSync(f, buf);
-  return f;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, { signal: ac.signal });
+    if (!r.ok) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length === 0) return null;
+    fs.writeFileSync(f, buf);
+    return f;
+  } catch (e) {
+    return null;           // failed / timed out / aborted -> caller falls back gracefully
+  } finally {
+    clearTimeout(timer);
+  }
 }
 // Replay the audio into the loopback mic. On Windows we use the bundled xiaoyou-audio.exe
 // (plays to a virtual device, e.g. CABLE Input -> CABLE Output). For other platforms
@@ -404,10 +417,11 @@ async function ensureAudio(key, url) {
 // where %f is the audio file path. The env var XIYOU_REPLAY_CMD overrides config too.
 function playAudio(mp3) {
   const cmdTpl = process.env.XIYOU_REPLAY_CMD || CFG.replayCmd || null;
-  if (cmdTpl) {
-    return new Promise(res => execFile('sh', ['-c', cmdTpl.replace(/%f/g, mp3)], () => res()));
-  }
-  return new Promise(res => execFile(AUDIO, ['play', PLAY_DEVICE, mp3], () => res()));
+  const p = cmdTpl
+    ? new Promise(res => execFile('sh', ['-c', cmdTpl.replace(/%f/g, mp3)], () => res()))
+    : new Promise(res => execFile(AUDIO, ['play', PLAY_DEVICE, mp3], () => res()));
+  // Never let a replay block the loop forever; bound it, but let a normal full-length playback finish.
+  return Promise.race([p, new Promise(res => setTimeout(res, REPLAY_TIMEOUT_MS))]);
 }
 
 async function stopRecord() {
@@ -470,8 +484,12 @@ async function detailsAnswerText() {
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
     var d=find('paperDetail'); if(!d) return null;
     var om=d.process&&d.process.oralTypeModel||{};
-    if(om.key){   // 翻译/问答题: keyword-scored -> synthesize the scored key phrases
-      return om.key.split(/[\\n;\\/，,]+/).map(function(s){return s.trim();}).filter(Boolean).join('. ');
+    if(om.key){   // 翻译/问答题: keyword-scored. The engine accepts ANY key variant, and scoring is by
+      // keyword match, so we only need to SPEAK ONE canonical answer. Speaking ALL variants concatenated
+      // turned a short WAV into a multi-minute one, so double playback blocked each record step for minutes
+      // (the "作业四无法正常进行" hang). Return just the first (most canonical) variant.
+      var parts = om.key.split(/[\\n;\\/，,]+/).map(function(s){return s.trim();}).filter(Boolean);
+      if(parts.length) return parts[0];
     }
     return null;
   })()`);
@@ -487,7 +505,9 @@ async function synthAnswer(text) {
   const safe = f.replace(/\\/g, '\\\\');
   const ps = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 0; $s.SetOutputToWaveFile('" + safe + "'); $s.Speak(" + JSON.stringify(text) + "); $s.Dispose();";
   return new Promise((res) => {
+    const timer = setTimeout(() => res(null), TTS_TIMEOUT_MS);   // bound the PowerShell TTS render
     execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], (err) => {
+      clearTimeout(timer);
       if (!err && fs.existsSync(f) && fs.statSync(f).size > 0) res(f); else res(null);
     });
   });
