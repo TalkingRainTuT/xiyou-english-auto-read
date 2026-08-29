@@ -1,10 +1,19 @@
 @echo off
-rem 西柚英语自动朗读 一键安装入口
-rem 检测/安装 VB-Cable、Node.js、.NET 6 SDK，并引导选择西柚客户端位置
+REM ============================================================
+REM  Xiyou English auto-read - one-click installer
+REM  Detects / installs VB-Cable, Node.js, .NET 6 SDK (skips if
+REM  present), then guides you to pick the Xiyou client exe path.
+REM  Double-click to run.
+REM ============================================================
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-echo [西柚自动朗读] 开始一键安装检查...
+echo.
+echo   === Xiyou English auto-read installer ===
+echo.
+echo   Checking VB-Cable / Node.js / .NET6 ... (already installed is skipped)
+echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0xiyou-install.ps1"
 echo.
-echo 安装脚本已结束。
-pause
+echo   Installer finished. Press any key to close this window.
+pause >nul

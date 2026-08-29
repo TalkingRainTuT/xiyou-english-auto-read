@@ -27,9 +27,9 @@ function Invoke-Run($exe, $args) {
 # ---- 1) Node.js ----
 function Test-Node { try { $v = cmd /c "node --version" 2>$null; return ($v -match '^v\d') } catch { return $false } }
 if (Test-Node) {
-  Write-Host '[1/4] Node.js 已安装: ' -NoNewline; cmd /c "node --version" | ForEach-Object { Write-Host $_ }
+  Write-Host '[1/6] Node.js 已安装: ' -NoNewline; cmd /c "node --version" | ForEach-Object { Write-Host $_ }
 } else {
-  Write-Host '[1/4] Node.js 未安装，准备安装（nodejs.org LTS）...' -ForegroundColor Yellow
+  Write-Host '[1/6] Node.js 未安装，准备安装（nodejs.org LTS）...' -ForegroundColor Yellow
   $dest = Join-Path $env:TEMP 'node-install.msi'
   $url = 'https://nodejs.org/dist/latest-v20.x/node-v20.19.0-x64.msi'
   try {
@@ -45,9 +45,9 @@ if (Test-Node) {
 # ---- 2) .NET 6 SDK ----
 function Test-Dotnet6 { try { $v = cmd /c "dotnet --version" 2>$null; return ($v -match '^6\.') } catch { return $false } }
 if (Test-Dotnet6) {
-  Write-Host '[2/4] .NET 6 SDK 已安装: ' -NoNewline; cmd /c "dotnet --version" | ForEach-Object { Write-Host $_ }
+  Write-Host '[2/6] .NET 6 SDK 已安装: ' -NoNewline; cmd /c "dotnet --version" | ForEach-Object { Write-Host $_ }
 } else {
-  Write-Host '[2/4] .NET 6 SDK 未安装，准备安装（dotnet 6.0 SDK）...' -ForegroundColor Yellow
+  Write-Host '[2/6] .NET 6 SDK 未安装，准备安装（dotnet 6.0 SDK）...' -ForegroundColor Yellow
   $dest = Join-Path $env:TEMP 'dotnet-sdk6.exe'
   $url = 'https://builds.dotnet.microsoft.com/dotnet/Sdk/6.0.428/dotnet-sdk-6.0.428-win-x64.exe'
   try {
@@ -70,9 +70,9 @@ function Test-VBCable {
   } catch { return $false }
 }
 if (Test-VBCable) {
-  Write-Host '[3/4] VB-Cable 虚拟声卡已安装。' -ForegroundColor Green
+  Write-Host '[3/6] VB-Cable 虚拟声卡已安装。' -ForegroundColor Green
 } else {
-  Write-Host '[3/4] VB-Cable 虚拟声卡未找到，需要安装。' -ForegroundColor Yellow
+  Write-Host '[3/6] VB-Cable 虚拟声卡未找到，需要安装。' -ForegroundColor Yellow
   Write-Host '   VB-Cable 是驱动程序，需从官网下载安装（需管理员权限，装后建议重启）。' -ForegroundColor Yellow
   Write-Host '   下载页: https://www.vb-audio.com/Cable/' -ForegroundColor White
   if (-not $NoOpen) { Start-Process 'https://www.vb-audio.com/Cable/' }
@@ -82,8 +82,28 @@ if (Test-VBCable) {
   if (-not $Auto) { Read-Host | Out-Null }
 }
 
-# ---- 4) 选择西柚客户端位置 ----
-Write-Host '[4/4] 选择「西柚英语个人版」客户端位置' -ForegroundColor Cyan
+# ---- 4) 编译自动程序(audio-tool) ----
+Write-Host '[4/6] 编译自动程序 audio-tool...' -ForegroundColor Cyan
+$audioExe = Join-Path $Root 'audio-tool/bin/Release/net6.0/xiaoyou-audio.exe'
+$setdevExe = Join-Path $Root 'audio-tool/setdev/bin/Release/net6.0/setdev.exe'
+if ((Test-Path $audioExe) -and (Test-Path $setdevExe)) {
+  Write-Host '   已编译（xiaoyou-audio.exe / setdev.exe 存在，跳过）。' -ForegroundColor Green
+} else {
+  Write-Host '   未编译，正在用 dotnet 构建 audio-tool（需要 .NET6）...' -ForegroundColor DarkGray
+  $proj = Join-Path $Root 'audio-tool/audio-tool.csproj'
+  if (Test-Path $proj) {
+    Push-Location $Root
+    $out = cmd /c "dotnet build audio-tool -c Release" 2>&1
+    Pop-Location
+    if ((Test-Path $audioExe) -and (Test-Path $setdevExe)) { Write-Host '   编译成功。' -ForegroundColor Green }
+    else { Write-Host '   编译失败，请手动执行:  dotnet build audio-tool -c Release' -ForegroundColor Red }
+  } else {
+    Write-Host '   未找到 audio-tool 源码（缺少 audio-tool/audio-tool.csproj）。' -ForegroundColor Red
+  }
+}
+
+# ---- 5) 选择西柚客户端位置 ----
+Write-Host '[5/6] 选择「西柚英语个人版」客户端位置' -ForegroundColor Cyan
 $default = 'D:\Program Files\Xiyou\西柚英语个人版.exe'
 $exe = $default
 if (Test-Path $exe) {
@@ -127,18 +147,45 @@ function Write-CfgClientExe($exe) {
 }
 if (Test-Path $exe) { Write-CfgClientExe $exe }
 
-# ---- 提示构建 audio-tool ----
-$audioExe = Join-Path $Root 'audio-tool/bin/Release/net6.0/xiaoyou-audio.exe'
-if (-not (Test-Path $audioExe)) {
-  Write-Host ''
-  Write-Host '检测到 audio-tool 尚未编译（缺少 ' -NoNewline
-  Write-Host ((Split-Path $audioExe -Leaf)) -NoNewline
-  Write-Host '）。' -ForegroundColor DarkGray
-  Write-Host '若 .NET 6 已装好，请在项目根目录执行：' -ForegroundColor Yellow
-  Write-Host '   dotnet build audio-tool -c Release' -ForegroundColor White
-  Write-Host '然后把生成的 xiaoyou-audio.exe / setdev.exe 放好后，再用 启动器 运行。' -ForegroundColor DarkGray
+# ---- 6) 校验自动程序文件 + 创建桌面快捷方式 ----
+Write-Host '[6/6] 校验自动程序文件 + 创建桌面快捷方式...' -ForegroundColor Cyan
+$launchBat = Join-Path $Root '双击启动-西柚自动朗读.bat'
+$files = @{
+  'xiyou-auto.js'      = Join-Path $Root 'xiyou-auto.js'
+  'config.json'        = $CfgPath
+  'xiyou-driver.js'    = Join-Path $Root 'xiyou-driver.js'
+  'xiyou-launch.ps1'   = Join-Path $Root 'xiyou-launch.ps1'
+  'xiaoyou-audio.exe'  = $audioExe
+  'setdev.exe'         = $setdevExe
+  '启动器(双击启动)'    = $launchBat
+}
+foreach ($k in $files.Keys) { $p = $files[$k]; $ok = Test-Path $p; Write-Host ("   " + ($(if($ok){'[OK]'}else{'[缺]'})) + " " + $k) -ForegroundColor $(if($ok){'Green'}else{'Red'}) }
+
+# 创建桌面快捷方式（指向启动器 bat）
+try {
+  $Shell = New-Object -ComObject WScript.Shell
+  $desktop = [Environment]::GetFolderPath('Desktop')
+  $lnk = $Shell.CreateShortcut((Join-Path $desktop '西柚自动朗读.lnk'))
+  $lnk.TargetPath = $launchBat
+  $lnk.WorkingDirectory = $Root
+  $lnk.Description = '西柚英语自动朗读'
+  $lnk.Save()
+  Write-Host '   已在桌面创建快捷方式「西柚自动朗读」。' -ForegroundColor Green
+} catch {
+  Write-Host '   创建桌面快捷方式失败（可忽略）：' -ForegroundColor DarkGray
+  Write-Host ('     ' + $_.Exception.Message) -ForegroundColor DarkGray
 }
 
+# ---- 就绪汇总 ----
+$ready = (Test-Node) -and (Test-Dotnet6) -and (Test-VBCable) -and (Test-Path $audioExe) -and (Test-Path $exe)
 Write-Host ''
-Write-Host '安装/检查完成。' -ForegroundColor Green
-Write-Host '若你新增/改动过程序，请重启电脑后再运行 启动器，以避免 VB-Cable 未生效。' -ForegroundColor DarkGray
+Write-Host '===================================================' -ForegroundColor Cyan
+if ($ready) {
+  Write-Host ' ✅ 环境与自动程序均已就绪！' -ForegroundColor Green
+  Write-Host '    双击桌面的「西柚自动朗读」或 ' -ForegroundColor Green
+  Write-Host '    「双击启动-西柚自动朗读.bat」开始使用。' -ForegroundColor Green
+} else {
+  Write-Host ' ⚠ 部分组件未就绪，请按上方提示处理后再运行启动器。' -ForegroundColor Yellow
+}
+Write-Host '===================================================' -ForegroundColor Cyan
+Write-Host '提示：若 VB-Cable 刚安装，建议重启电脑后再运行启动器。' -ForegroundColor DarkGray
