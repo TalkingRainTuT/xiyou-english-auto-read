@@ -49,6 +49,10 @@ let readDone = false;
 // it may not be ready yet, so the first word's recording can be silent (score 0). We give the
 // first record a longer warm-up wait.
 let didFirstRecord = false;
+// Tracks progress through the paperDetail (作业四) sub-exercises so watch re-enters the NEXT menu
+// (模仿朗读/角色扮演/故事复述) instead of redoing the first one every time.
+let detailMenuIdx = 0;
+const DETAIL_MENU_NAMES = ['模仿朗读', '角色扮演', '故事复述'];
 const DEBUG = (CFG.cdpUrl || 'http://127.0.0.1') + ':' + PORT;
 const APP_PREFIX = CFG.appUrlPrefix || 'https://student.xiyouyingyu.com';
 const MIC_DEVICE = CFG.micDevice || 'CABLE Output';
@@ -192,6 +196,12 @@ async function detect() {
     if(al){return {type:'enter',found:true,enter:'accentList',recording:false};}
     var uw=find('unitWordListV2');
     if(uw){return {type:'enter',found:true,enter:'unitWordListV2',recording:false};}
+    // Homework detail list (bagList) for the paperDetail homework: re-enter the exercise to continue.
+    var bg=find('bagList');
+    if(bg){return {type:'enter',found:true,enter:'bagList',recording:false};}
+    // Score report (paperScore): after clicking 再做一次 we land here; click a 重做 to re-enter.
+    var ps=find('paperScore');
+    if(ps){return {type:'enter',found:true,enter:'paperScore',recording:false};}
     return {type:null,found:false};
   })()`);
 }
@@ -329,7 +339,30 @@ async function enterFromList(kind) {
       else { if(clickRow('朗读单词')) return 'unitWordListV2->read'; }
       return 'unitWordListV2->done-or-none';   // no not-done part -> do nothing (no loop)
     }
+    if(kind==='bagList'){
+      // 作业四(听说同步) 的详情列表: click 再做一次 -> paperScore, then 重做 -> re-enter paperDetail.
+      // This lets watch continue through every sub-exercise after each one submits and returns here.
+      function leaf(t){return [...document.querySelectorAll('*')].filter(function(e){return e.children.length===0 && (e.innerText||'').trim()===t;});}
+      var redoBtn=leaf('再做一次'); if(redoBtn.length) redoBtn[0].click();
+      return 'bagList->redo-again';
+    }
     return null;
+  })()`);
+}
+// When on the paperScore report after clicking 再做一次, click the 重做 button of the target
+// sub-exercise to re-enter paperDetail at that menu. targetName is one of 模仿朗读/角色扮演/故事复述.
+// Returns true if a 重做 was clicked.
+async function enterPaperScore(targetName) {
+  return evaluate(`(function(){
+    function leaf(t){return [...document.querySelectorAll('*')].filter(function(e){return e.children.length===0 && (e.innerText||'').trim()===t;});}
+    var redo=leaf('重做');
+    if(!redo.length) return false;
+    var target=${JSON.stringify(targetName||'')};
+    // find the 重做 whose ancestor row mentions targetName
+    for(var i=0;i<redo.length;i++){ var el=redo[i], row=el; for(var k=0;k<8&&row;k++){ row=row.parentElement; if(row && target && (row.innerText||'').indexOf(target)>=0){ el.click(); return true; } } }
+    // fallback: if no target matched, take the FIRST 重做 (avoids getting stuck)
+    redo[0].click();
+    return true;
   })()`);
 }
 // For the word-choice exercise: pick the correct option (the one with answer=true).
@@ -428,6 +461,40 @@ async function detailsAudio() {
   return ensureAudio('details_' + key, url);
 }
 
+// 角色扮演 record steps (om.name 翻译 / 问答题) are scored by KEY-PHRASE matching (om.key), not by
+// pronunciation. There is no model audio URL; the answer is the model text. The engine scores the SPOKEN
+// answer against the key phrases, so we synthesize those phrases (short, fast) and replay them. Trigger
+// only when the record step exposes key phrases (hasKey). Else return null (caller replays model audio).
+async function detailsAnswerText() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('paperDetail'); if(!d) return null;
+    var om=d.process&&d.process.oralTypeModel||{};
+    if(om.key){   // 翻译/问答题: keyword-scored -> synthesize the scored key phrases
+      return om.key.split(/[\\n;\\/，,]+/).map(function(s){return s.trim();}).filter(Boolean).join('. ');
+    }
+    return null;
+  })()`);
+}
+
+// Synthesize the given text into a WAV via the Windows System.Speech engine (PS) at a moderate rate and
+// 16 kHz mono to keep the file small, cache it, and return the file path. Falls back to null on failure.
+async function synthAnswer(text) {
+  if (!text) return null;
+  const key = 'ano_' + slug(text).slice(0, 40) + '_' + hashUrl(text) + '.wav';
+  const f = path.join(CACHE, key);
+  if (fs.existsSync(f) && fs.statSync(f).size > 0) return f;
+  const safe = f.replace(/\\/g, '\\\\');
+  const ps = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 0; $s.SetOutputToWaveFile('" + safe + "'); $s.Speak(" + JSON.stringify(text) + "); $s.Dispose();";
+  return new Promise((res) => {
+    execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], (err) => {
+      if (!err && fs.existsSync(f) && fs.statSync(f).size > 0) res(f); else res(null);
+    });
+  });
+}
+
+
+
 // When paperDetail's save-upload flow stalls (loading stuck true after a record), force the step
 // forward with nextFlow(). Returns true if it advanced. Safe no-op if component gone.
 async function forceDetailsNext() {
@@ -464,14 +531,23 @@ async function processItem() {
       return { ok: true, skipRecord: true };
     }
     // Record step: the app's readList() already calls egStartRecord() when the step loads, so we may
-    // already be recording. Ensure the record window is open, replay the model audio into the mic,
+    // already be recording. Ensure the record window is open, replay the correct audio into the mic,
     // then force-stop so the engine scores it and msgHandle clears saveRecordAnswer.
     const p = await ensureRecordStarted();
     if (!p) return { ok: false, reason: 'record not started' };
     await wait(700);
-    // Replay the reference audio (need an audio url for the record step — see fetchDetailsAudio below).
-    const daudio = await detailsAudio();
-    if (daudio) { await playAudio(daudio); await playAudio(daudio); console.log('   [details] replayed model audio.'); }
+    // 角色扮演(问答题): scored by key-phrase matching — synthesize the model answer & replay it.
+    // 模仿朗读/故事复述: scored by pronunciation — replay the reference/model audio.
+    const ansTxt = await detailsAnswerText();
+    let replayed = false;
+    if (ansTxt) {
+      const awav = await synthAnswer(ansTxt);
+      if (awav) { await playAudio(awav); await playAudio(awav); console.log('   [details] replayed synthesized answer (问答题).'); replayed = true; }
+    }
+    if (!replayed) {
+      const daudio = await detailsAudio();
+      if (daudio) { await playAudio(daudio); await playAudio(daudio); console.log('   [details] replayed model audio.'); }
+    }
     await wait(600);
     await stopRecord();
     const end = Date.now() + 2500;
@@ -490,6 +566,10 @@ async function processItem() {
 
   const winSec = (snap.windowSec || 10);
   const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
+  // "每个朗读的最开始(1/xx)多停1秒": the first item of a read-aloud series. Sentence reports index
+  // as seq+1 (1-based), others are 0-based. So the series start is index===1 (sentence) or index===0.
+  const atStart = (snap.type === 'sentence') ? (snap.index === 1) : (snap.index === 0);
+  if (atStart) await wait(1000);                        // +1s at the very start to avoid a missed recording
   if (snap.type !== 'text') await wait(500);                 // 0.5s lead-in before word/sentence record
   await startRecord();
   await wait(first ? 700 : 300);
@@ -532,9 +612,9 @@ async function main() {
       if (snap.type === 'enter') {
         if (snap.enter === supKind && Date.now() < supUntil) { await wait(1500); continue; }
         console.log('[enter] auto-opening: ' + snap.enter);
-        const r = await enterFromList(snap.enter);
+        const r = snap.enter === 'paperScore' ? ((await enterPaperScore()) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
         if (r && /done-or-none|fallback/.test(r)) { supKind = snap.enter; supUntil = Date.now() + 30000; console.log('   "' + snap.enter + '" nothing to do; not re-opening for 30s.'); }
-        else if (r) { supKind = null; supUntil = 0; }
+        else if (r && /->redo|->detail|->read|->choice|->redo/.test(r)) { supKind = null; supUntil = 0; }
         await wait(1200);
         continue;
       }
@@ -610,13 +690,21 @@ async function main() {
               continue;
             }
             console.log('[enter] auto-opening: ' + snap.enter);
-            const res = await enterFromList(snap.enter);
+            let res;
+            if (snap.enter === 'paperScore') {
+              // We clicked 再做一次 on the homework detail and landed on the score report.
+              // Click the 重做 for the next target sub-exercise to re-enter paperDetail.
+              const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
+              res = (await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none';
+            } else {
+              res = await enterFromList(snap.enter);
+            }
             if (res && /done-or-none|fallback/.test(res)) {
               // Nothing runnable on this list -> suppress re-entering it for a while.
               suppressKind = snap.enter;
               suppressUntil = Date.now() + 30000;
               console.log('   [watch] "' + snap.enter + '" has nothing to do; not re-opening for 30s.');
-            } else if (res) {
+            } else if (res && /->redo|->detail|->read|->choice/.test(res)) {
               suppressKind = null; suppressUntil = 0;   // something opened -> reset suppression
             }
             await wait(1200);
@@ -651,6 +739,29 @@ async function main() {
               const a2 = await advance();
               if (a2 === 'sentence-advanced') break;
             }
+          }
+          // paperDetail record step (sub 4): the app's save-upload flow advances on its own once the
+          // score is uploaded. If 'loading' stayed stuck, unstick it and nudge nextFlow (mirrors run loop).
+          if (snap.type === 'details' && snap.sub === 4) {
+            for (let w = 0; w < 10; w++) {
+              await wait(1000);
+              const s2 = await detect();
+              if (!s2.found) break;
+              if ((s2.menu !== snap.menu) || (s2.index !== snap.index)) break;   // advanced (or moved menu)
+              const st = await forceDetailsNext();
+              if (st) { console.log('   [watch] record step stuck; forced nextFlow.'); break; }
+            }
+          }
+          // Once a paperDetail menu's record fully finished, advance the target menu so the next
+          // re-entry (bagList->再做一次->重做) starts at the next sub-exercise instead of menu 0.
+          if (snap.type === 'details' && snap.sub === 4 && (typeof snap.menu === 'number')) {
+            detailMenuIdx = Math.max(detailMenuIdx, snap.menu + 1);
+          }
+          // If we just re-entered paperDetail but want a later menu (reFormIndex always starts at 0),
+          // jump to the target menu directly.
+          if (snap.type === 'details' && detailMenuIdx > 0 && snap.menu === 0) {
+            const g = await gotoDetailsMenu(detailMenuIdx);
+            if (g) console.log('   [watch] jumped to details menu ' + detailMenuIdx + ' (' + (DETAIL_MENU_NAMES[detailMenuIdx]||'') + ')');
           }
           // After completing a runnable exercise it often returns to a list screen. Cooldown all
           // auto-entering so it doesn't instantly re-open the just-finished exercise (review loop).
