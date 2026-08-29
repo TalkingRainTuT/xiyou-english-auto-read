@@ -609,17 +609,13 @@ async function processItem() {
     if (!replayed) {
       const daudio = await detailsAudio();
       if (daudio) {
-        // 模仿朗读/故事复述 are pronunciation-scored: the app records the WHOLE reading window and scores it
-        // against the model. Replay the (full-length) model audio and keep playing until the window is filled,
-        // so the mic hears the correct reading for the whole window (a short fragment then silence -> 0).
-        const winSec = Math.max(snap.windowSec || 0, 15);
-        const t0 = Date.now();
-        let plays = 0;
-        while (Date.now() - t0 < winSec * 1000 && plays < 4) {
-          await playAudio(daudio);
-          plays++;
-        }
-        console.log('   [details] replayed model audio (' + plays + 'x for ' + winSec + 's window).');
+        // 模仿朗读/故事复述 are pronunciation-scored: the student reads the passage ONCE. Replay the model
+        // audio a single time (it IS the passage reading). Do NOT loop it — looping plays the passage twice,
+        // and the app's recording typically ends (or stops at the first pass) leaving the repeat unrecorded /
+        // unclear ("后半段没录上/不清楚" -> 低分). After the single play the window may hold trailing silence;
+        // that is the normal "student finished" tail and the engine scores the one complete reading.
+        await playAudio(daudio);
+        console.log('   [details] replayed model audio (1x, ' + (fs.statSync(daudio).size) + 'B file, window=' + (snap.windowSec || '?') + 's).');
       }
     }
     await wait(600);
@@ -646,15 +642,19 @@ async function processItem() {
   if (atStart) await wait(1000);                        // +1s at the very start to avoid a missed recording
   if (snap.type !== 'text') await wait(500);                 // 0.5s lead-in before word/sentence record
   await startRecord();
-  await wait(first ? 700 : 300);
+  // For text (read) the model audio is the WHOLE paragraph reading, which should span the record window.
+  // Minimal lead-in so the playback fills the window from the start (a long lead-in would push the tail out
+  // of the recording window -> the latter part of the passage is cut -> low score).
+  await wait(snap.type === 'text' ? 200 : (first ? 700 : 300));
   didFirstRecord = true;
   // Feed the correct pronunciation into the mic by replaying the audio a bounded number of
   // passes, then FORCE-STOP the recording so we don't wait for the app's (long) countdown and
   // so egRecordState clears (which lets goNext/handleNext advance -> fixes sentence repeating).
   let plays = 0;
   if (snap.type === 'text') {
-    // Article: play the full audio once (it IS the whole paragraph reading), then stop.
+    // Article: play the full audio once (it IS the whole paragraph reading). Do NOT loop it.
     await playAudio(audio); plays = 1;
+    console.log('   [text] replayed model audio (1x, ' + (fs.statSync(audio).size) + 'B file, window=' + winSec + 's).');
   } else {
     // Word/sentence — deterministic fast rhythm: play the correct audio ONCE (efficiency), then
     // a short pause, then FORCE-STOP. No waiting for the app's long countdown.
