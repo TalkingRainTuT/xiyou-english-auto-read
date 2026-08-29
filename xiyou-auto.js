@@ -209,9 +209,10 @@ async function detect() {
     // finalize+score via EngineEvaluat.stopRecord(), advance via nextSentence().
     var db=find('DubbingIndex');
     if(db){var ddd=db._data||{},dddeta=ddd.dubDetail||{},didx=ddd.sentenceIndex||0;
-      var dlines=String(dddeta.originalText||'').split(/\\n/).map(function(s){return s.trim();}).filter(Boolean);
-      var dline=dlines[didx]||'';
-      return {type:'dub',found:true,index:didx,total:dlines.length,text:dline,audioUrl:(dddeta.backgroundAudioUrl||''),recording:!!ddd.egRecordState,windowSec:(dddeta.videoDuration||36),menu:0};}
+      var sents=dddeta.sentences||[];
+      var dline = sents[didx] ? (sents[didx].originalText||'') : '';
+      if(!dline){ var dlines=String(dddeta.originalText||'').split(/\\n/).map(function(s){return s.trim();}).filter(Boolean); dline=dlines[didx]||''; }
+      return {type:'dub',found:true,index:didx,total:(sents.length||0),text:dline,audioUrl:(dddeta.backgroundAudioUrl||''),recording:!!ddd.egRecordState,windowSec:(dddeta.videoDuration||36),menu:0};}
     // List screens: only auto-navigate WITHIN a homework the user already opened.
     // We do NOT auto-open whole homework items from bagList (the user picks which homework),
     // which prevents "forcibly opening a homework / looping".
@@ -655,13 +656,11 @@ async function processItem() {
     return { ok: true };
   }
 
-  // 作业二 趣味配音 (DubbingIndex): pronunciation-scored dubbing, one line at a time. Reuse the
-  // 角色扮演 TTS approach — synthesize the current line, replay it into the mic, then stop the
-  // recording so the engine scores the pronunciation, then advance to the next sentence.
+  // 作业二 趣味配音 (DubbingIndex): pronunciation-scored dubbing, one line at a time. 按最简单可靠的思路：
+  // 直接从当前显示的句子(detect 已提取) TTS 合成 → 回放给麦克风。**不调用** app 内部录音方法
+  // (videoStart/egStartRecord/EngineEvaluat.startRecord 等依赖 app 内部"当前分段"状态，调用反而破坏状态)。
+  // app 在正常播放/录音时会自然采集到麦克风里的正确发音并评分。之后由 advance() 切下一句。
   if (snap.type === 'dub') {
-    const started = await dubStart();
-    if (!started) return { ok: false, reason: 'dub record not started' };
-    await wait(600);
     if (snap.text) {
       const awav = await synthAnswer(snap.text);
       if (awav) {
@@ -669,11 +668,7 @@ async function processItem() {
         console.log('   [dub] replayed TTS line (' + snap.text.slice(0, 30) + ').');
       }
     }
-    await wait(500);
-    await dubStop();
-    const end = Date.now() + 2500;
-    while ((await dubRecording()) && Date.now() < end) { await wait(1000); }
-    console.log('   [dub] line ended (recording=' + (await dubRecording()) + ')');
+    await wait(1500);
     return { ok: true };
   }
 
