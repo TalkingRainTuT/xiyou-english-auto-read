@@ -125,24 +125,55 @@ node xiyou-auto.js watch     # 持续循环：自动识别并朗读任何打开�
 | 课文朗读(整段) | `read` | 回放整段 → 评分 → 提交 |
 | 看义选词(选词) | `chooseTranslateV2` | 读取 `optionsTypeList` 中 `answer=true` 的选项直接点选 |
 
-## Mac 适配（说明）
+## Mac 适配（理论适配，未实测）
 
 > 本项目最初面向 Windows（西柚客户端是 `.exe`，靠 VB-Cable + .NET 音频工具回放）。
-> **CDP 自动化逻辑本身是跨平台的**（只驱动浏览器），但以下部分是平台相关、我**未在 Mac 上实测**：
+> **CDP 自动化逻辑本身是跨平台的**（只驱动浏览器，`detect()`/`chooseAnswer()`/`watch` 都能在 Mac 跑），
+> 但音频输入输出、客户端路径、启动方式是平台相关。以下为**理论适配方案，未在 Mac 实测**，
+> 请谨慎使用；如能提供可运行的 Mac 客户端和虚拟声卡，我可进一步适配实测。
 
-- **客户端**：需要西柚英语的 macOS 版本（若有），把 `config.json` 的 `clientExe` 改成它的路径，
-  启动参数改到 `clientLaunchArgs`（Mac 上可能不带 `--remote-debugging-port`，需自行确认）。
-- **虚拟声卡**：Windows 用 VB-Cable；Mac 用 **BlackHole** 或 **Loopback**（二选一，自行安装）。
-  把虚拟设备名填到 `config.json` 的 `cableMicDevice`。
-- **回放音频**：`.NET NAudio` 工具只在 Windows 跑。Mac 上改用命令行回放，例如：
-  ```json
-  "replayCmd": "afplay %f"   // 把默认输出路由进 BlackHole 回环即等价
-  ```
-  或者 `ffplay -nodisp -loglevel quiet %f`。`%f` 会被替换成音频文件路径。
-- **启动器**：`.bat`/`.ps1` 只在 Windows；Mac 直接
-  `node xiyou-auto.js watch`，自己手动打开作业。
+### Mac 与 Windows 的差异对照
 
-Mac 用户如能给到我可运行的 Mac 客户端和虚拟声卡，我可以进一步适配并实测；否则以上是理论适配方案，请谨慎使用。
+| 环节 | Windows（已实测） | macOS（理论方案） |
+| --- | --- | --- |
+| 客户端 | `西柚英语个人版.exe` | 西柚英语 mac 版 App（若有） |
+| 虚拟声卡 | VB-Cable | **BlackHole** 或 **Loopback** |
+| 回放音频 | `.NET NAudio` 工具 `xiaoyou-audio.exe` | 命令行 `afplay` / `ffplay` |
+| 启动方式 | `.bat` / `xiyou-launch.ps1` | `node xiyou-auto.js watch` |
+| 麦克风只给西柚用 | `getUserMedia` 覆盖（通用） | 同样通用（Chromium/Electron） |
+
+### Mac 上的配置（改 `config.json`）
+
+```json
+{
+  "port": 9222,
+  "platform": "mac",
+  "clientExe": "/Applications/Xiyou.app/Contents/MacOS/xiyou",  // 改成你的 mac 版西柚路径
+  "cableMicDevice": "BlackHole 2ch",                            // 或 Loopback 的设备名
+  "useCableMicOverride": true,
+  "replayCmd": "afplay %f"                                       // 把默认输出路由进 BlackHole 回环
+}
+```
+
+要点：
+- 改成 `platform: "mac"` 后，`xiyou-auto.js` 仍会用 `getUserMedia` 覆盖让你的麦克风只走虚拟声卡。
+- Mac 上没有 `.NET` 音频工具，用 `replayCmd` 指定回放命令（`%f` 会替换成音频文件路径）。
+  BlackHole 安装后，把「默认输出」设为 BlackHole，则 `afplay` 播出的声音会进到 BlackHole 回环，
+  西柚的麦克风（被覆盖到 BlackHole）就录到了；再配合把「默认输入」暂时指回真实麦克风，避免录进系统声音。
+- 若 Mac 版西柚不允许 `--remote-debugging-port` 直启，可先手动开 App，再用 `xiyou-auto.js watch` 连
+  现有实例（`client()` 会重试等待调试端口就绪）。
+
+### Mac 启动脚本（可选，参考）
+
+```bash
+#!/usr/bin/env bash
+# xiyou-launch.sh —— mac 版启动器（未实测）
+cd "$(dirname "$0")"
+echo "请在打开的西柚窗口里手动进入朗读/选词作业..."
+node xiyou-auto.js watch
+```
+
+Mac 用户如能给到可运行的 Mac 客户端和虚拟声卡，我可以进一步适配并实测；否则以上是理论适配方案，请谨慎使用。
 
 ## 技术栈
 
