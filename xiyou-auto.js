@@ -360,13 +360,16 @@ async function main() {
   if (cmd === 'run' || cmd === 'runall') {
     const n = cmd === 'runall' ? Infinity : (Number(process.argv[3]) || 1);
     console.log('target=' + (n === Infinity ? 'ALL' : n));
-    let done = 0, worstSame = 0, lastKey = null;
+    let done = 0, worstSame = 0, lastKey = null, supKind = null, supUntil = 0;
     while (done < n) {
       const snap = await detect();
       if (!snap.found) { console.log('reading screen not detected; is the exercise open? (use watch to auto-wait)'); break; }
       if (snap.type === 'enter') {
+        if (snap.enter === supKind && Date.now() < supUntil) { await wait(1500); continue; }
         console.log('[enter] auto-opening: ' + snap.enter);
-        await enterFromList(snap.enter);
+        const r = await enterFromList(snap.enter);
+        if (r && /done-or-none|fallback/.test(r)) { supKind = snap.enter; supUntil = Date.now() + 30000; console.log('   "' + snap.enter + '" nothing to do; not re-opening for 30s.'); }
+        else if (r) { supKind = null; supUntil = 0; }
         await wait(1200);
         continue;
       }
@@ -389,20 +392,30 @@ async function main() {
   }
   if (cmd === 'watch') {
     console.log('watch mode: auto-reads any read-aloud exercise that opens. Waiting...');
-    let idle = 0, errCount = 0, stuckRec = 0, enterCount = 0;
+    let idle = 0, errCount = 0, stuckRec = 0, suppressKind = null, suppressUntil = 0;
     for (;;) {
       try {
         const snap = await detect();
         if (snap.found) {
           idle = 0; errCount = 0;
           if (snap.type === 'enter') {
+            // If this exact list was recently found "nothing to do", don't keep re-entering it
+            // (avoids the endless auto-open/pause loop on a completed exercise).
+            const now = Date.now();
+            if (suppressKind === snap.enter && now < suppressUntil) {
+              await wait(1500);
+              continue;
+            }
             console.log('[enter] auto-opening: ' + snap.enter);
             const res = await enterFromList(snap.enter);
-            enterCount++;
-            // If a list keeps offering nothing new ("done-or-none") too many times, stop auto-entering
-            // to avoid an open/redo loop.
-            if (res && /done-or-none|fallback/.test(res)) { enterCount++; } else { enterCount = 0; }
-            if (enterCount >= 4) { console.log('   [watch] list keeps auto-opening nothing; pausing to avoid a loop.'); enterCount = 0; await wait(3000); }
+            if (res && /done-or-none|fallback/.test(res)) {
+              // Nothing runnable on this list -> suppress re-entering it for a while.
+              suppressKind = snap.enter;
+              suppressUntil = Date.now() + 30000;
+              console.log('   [watch] "' + snap.enter + '" has nothing to do; not re-opening for 30s.');
+            } else if (res) {
+              suppressKind = null; suppressUntil = 0;   // something opened -> reset suppression
+            }
             await wait(1200);
             continue;
           }
