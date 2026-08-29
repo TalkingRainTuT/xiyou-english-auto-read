@@ -285,7 +285,13 @@ async function stopRecord() {
   return evaluate(`(function(){
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
     try{
-      var w=find('readingLoudlyV2'); if(w&&w.egRecordState){if(typeof w.stopRecord==='function')w.stopRecord();return true;}
+      var w=find('readingLoudlyV2'); if(w&&w.egRecordState){
+        // The word component has no .stopRecord(); stop via the engine so egRecordState clears
+        // and nextList() (guarded by egRecordState) is allowed to advance.
+        if(typeof w.stopRecord==='function') w.stopRecord();
+        else if(w.EngineEvaluat&&typeof w.EngineEvaluat.stopRecord==='function') w.EngineEvaluat.stopRecord();
+        return true;
+      }
       var s=find('accentDetail'); if(s&&s.egRecordState){if(typeof s.stop==='function'){s.stop();}else if(typeof s.stopRecord==='function'){s.stopRecord();}return true;}
       var r=find('read'); if(r&&r.egRecordState){if(typeof r.stopRecord==='function'){r.stopRecord();}else{try{r.EngineEvaluat&&r.EngineEvaluat.stopRecord();}catch(e){}}return true;}
     }catch(e){}
