@@ -619,6 +619,18 @@ async function dubStop() {
     return false;
   })()`);
 }
+// 趣味配音: 模拟点击 app 的录音按钮(div.record)触发真实录音流程(egRecordState -> true)。
+// 仅未录音时点击(避免把已开始的录音再点一次反而停止)。
+async function dubClickRecord() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); var a=(d&&d._data)||{};
+    var r=document.querySelector('.record');
+    if(!r) return false;
+    if(!a.egRecordState){ r.click(); return true; }
+    return true;   // 已在录音
+  })()`);
+}
 async function dubRecording() {
   return evaluate(`(function(){
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
@@ -656,11 +668,12 @@ async function processItem() {
     return { ok: true };
   }
 
-  // 作业二 趣味配音 (DubbingIndex): pronunciation-scored dubbing, one line at a time. 按最简单可靠的思路：
-  // 直接从当前显示的句子(detect 已提取) TTS 合成 → 回放给麦克风。**不调用** app 内部录音方法
-  // (videoStart/egStartRecord/EngineEvaluat.startRecord 等依赖 app 内部"当前分段"状态，调用反而破坏状态)。
-  // app 在正常播放/录音时会自然采集到麦克风里的正确发音并评分。之后由 advance() 切下一句。
+  // 作业二 趣味配音 (DubbingIndex): 逐句配音。正确方式：**模拟点击 app 的录音按钮(div.record)**
+  // 让 app 进入正常录音状态(egRecordState=true)，再把当前句 TTS 合成回放给麦克风，app 采集到正确发音并评分。
   if (snap.type === 'dub') {
+    const started = await dubClickRecord();
+    console.log('   [dub] ' + (started ? 'clicked record button (recording started).' : 'record button not found.'));
+    await wait(600);
     if (snap.text) {
       const awav = await synthAnswer(snap.text);
       if (awav) {
@@ -668,7 +681,10 @@ async function processItem() {
         console.log('   [dub] replayed TTS line (' + snap.text.slice(0, 30) + ').');
       }
     }
-    await wait(1500);
+    // 等 app 完成该段录音/评分（有界）。
+    const endD = Date.now() + 4000;
+    while ((await dubRecording()) && Date.now() < endD) { await wait(800); }
+    console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
     return { ok: true };
   }
 
