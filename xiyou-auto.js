@@ -685,19 +685,9 @@ async function main() {
       const snap = await detect();
       if (!snap.found) { console.log('reading screen not detected; is the exercise open? (use watch to auto-wait)'); break; }
       if (snap.type === 'enter') {
-        if (snap.enter === supKind && Date.now() < supUntil) { await wait(1500); continue; }
-        // 作业四 fully done -> stop re-opening it (avoid the 再做一次 loop).
-        if ((snap.enter === 'paperScore' || snap.enter === 'bagList') && detailMenuIdx >= DETAIL_MENU_NAMES.length) {
-          console.log('   [run] 作业四 的子练习已全部完成; 停止重开。');
-          break;
-        }
-        console.log('[enter] auto-opening: ' + snap.enter);
-        const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
-        const r = snap.enter === 'paperScore' ? ((await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
-        if (r && /done-or-none|fallback/.test(r)) { supKind = snap.enter; supUntil = Date.now() + 30000; console.log('   "' + snap.enter + '" nothing to do; not re-opening for 30s.'); }
-        else if (r && /->redo|->detail|->read|->choice|->redo/.test(r)) { supKind = null; supUntil = 0; }
-        await wait(1200);
-        continue;
+        // 只自动朗读已经打开的练习；不自动打开任何列表/作业页（不再点 再做一次/重做/去完成）。
+        console.log('   [run] 列表/作业页 (' + snap.enter + '): 不自动打开，结束。');
+        break;
       }
       // Let paperDetail record steps (sub===4) through even though they auto-start recording:
       // processItem() forces them (replay + stop). Other recording states just wait.
@@ -769,55 +759,24 @@ async function main() {
   if (cmd === 'watch') {
     console.log('watch mode: auto-reads any read-aloud exercise that opens. Waiting...');
     let idle = 0, errCount = 0, stuckRec = 0, suppressKind = null, suppressUntil = 0, cooldownUntil = 0;
+    let onList = false;
     for (;;) {
       try {
         const snap = await detect();
         if (snap.found) {
           idle = 0; errCount = 0;
           if (snap.type === 'enter') {
-            // If this exact list was recently found "nothing to do", don't keep re-entering it
-            // (avoids the endless auto-open/pause loop on a completed exercise).
-            const now = Date.now();
-            if (suppressKind === snap.enter && now < suppressUntil) {
-              await wait(1500);
-              continue;
+            // 只自动朗读已经打开的练习；不自动打开任何列表/作业页（不再点 再做一次/重做/去完成）。
+            // 用户手动点进某个练习后，detect() 下一轮就会看到对应的朗读组件并自动朗读。这从根源上消除
+            // "反复自动跳转打开作业、无法停下" 的循环。
+            if (!onList) {
+              console.log('   [watch] 列表/作业页 (' + snap.enter + '): 不自动打开。请手动进入要朗读的练习。');
+              onList = true;
             }
-            // Cooldown after finishing an exercise: don't instantly re-open the list.
-            if (now < cooldownUntil) {
-              await wait(1500);
-              continue;
-            }
-            // 作业四 (paperDetail) fully done: its three sub-exercises (模仿朗读/角色扮演/故事复述) have all been
-            // processed once (detailMenuIdx reached the count), so the further "在做一次/重做" buttons just loop it.
-            // Do NOT fall back to DETAIL_MENU_NAMES[0] again — suppress re-opening the homework for a long time.
-            if ((snap.enter === 'paperScore' || snap.enter === 'bagList') && detailMenuIdx >= DETAIL_MENU_NAMES.length) {
-              suppressKind = snap.enter;
-              suppressUntil = now + 3600000;
-              console.log('   [watch] 作业四 的子练习已全部完成; 不再自动重做 (suppress 1h).');
-              await wait(1500);
-              continue;
-            }
-            console.log('[enter] auto-opening: ' + snap.enter);
-            let res;
-            if (snap.enter === 'paperScore') {
-              // We clicked 再做一次 on the homework detail and landed on the score report.
-              // Click the 重做 for the next target sub-exercise to re-enter paperDetail.
-              const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
-              res = (await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none';
-            } else {
-              res = await enterFromList(snap.enter);
-            }
-            if (res && /done-or-none|fallback/.test(res)) {
-              // Nothing runnable on this list -> suppress re-entering it for a while.
-              suppressKind = snap.enter;
-              suppressUntil = Date.now() + 30000;
-              console.log('   [watch] "' + snap.enter + '" has nothing to do; not re-opening for 30s.');
-            } else if (res && /->redo|->detail|->read|->choice/.test(res)) {
-              suppressKind = null; suppressUntil = 0;   // something opened -> reset suppression
-            }
-            await wait(1200);
+            await wait(1500);
             continue;
           }
+          onList = false;
           if (snap.recording && !(snap.type === 'details' && snap.sub === 4)) {
             stuckRec++;
             if (stuckRec >= 30) {   // ~45s of "recording" with no progress -> force-stop once
