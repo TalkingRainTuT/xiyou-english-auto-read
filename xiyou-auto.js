@@ -490,6 +490,7 @@ async function processItem() {
 
   const winSec = (snap.windowSec || 10);
   const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
+  if (snap.type !== 'text') await wait(500);                 // 0.5s lead-in before word/sentence record
   await startRecord();
   await wait(first ? 700 : 300);
   didFirstRecord = true;
@@ -505,12 +506,13 @@ async function processItem() {
     // a short pause, then FORCE-STOP. No waiting for the app's long countdown.
     if (first) await wait(800);                    // small warm-up only on the very first word
     await playAudio(audio); plays = 1;
-    await wait(800);                                // "播完停一秒" — let the app capture the tail, then switch
+    await wait(500);                                // 0.5s tail after the audio, then switch
   }
   // Force-stop so the engine finalizes and egRecordState clears, then a short grace wait.
   await stopRecord();
   const end = Date.now() + 2500;
   while ((await recording()) && Date.now() < end) { await wait(1000); }
+  if (snap.type !== 'text') await wait(500);        // 0.5s lead-out after the record
   console.log('   record window ended (replays=3, recording=' + (await recording()) + ')');
   return { ok: true };
 }
