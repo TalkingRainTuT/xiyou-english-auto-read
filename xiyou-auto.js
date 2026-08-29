@@ -215,6 +215,9 @@ async function detect() {
     // List screens: only auto-navigate WITHIN a homework the user already opened.
     // We do NOT auto-open whole homework items from bagList (the user picks which homework),
     // which prevents "forcibly opening a homework / looping".
+    // 趣味配音准备页 (FunDubbing, 含「开始配音」按钮): auto-click 开始配音 to enter DubbingIndex.
+    var fdp=find('FunDubbing');
+    if(fdp){return {type:'dub-prep',found:true,recording:false};}
     var al=find('accentList');
     if(al){return {type:'enter',found:true,enter:'accentList',recording:false};}
     var uw=find('unitWordListV2');
@@ -609,6 +612,14 @@ async function dubRecording() {
     var d=find('DubbingIndex'); if(!d) return false; return !!(d._data&&d._data.egRecordState);
   })()`);
 }
+// 趣味配音准备页: 点「开始配音」进入 DubbingIndex.
+async function dubPrepStart() {
+  return evaluate(`(function(){
+    function leaf(t){return [...document.querySelectorAll('*')].filter(function(e){return e.children.length===0 && (e.innerText||'').trim()===t;});}
+    var b=leaf('开始配音'); if(b.length){ b[0].click(); return true; }
+    return false;
+  })()`);
+}
 
 async function processItem() {
   const snap = await detect();
@@ -621,6 +632,14 @@ async function processItem() {
     const picked = await chooseAnswer();
     console.log('   picked correct option: ' + (picked ? picked.text : '?'));
     await wait(800);
+    return { ok: true };
+  }
+
+  // 趣味配音准备页 (FunDubbing): click 开始配音 to enter the DubbingIndex dubbing screen.
+  if (snap.type === 'dub-prep') {
+    const clicked = await dubPrepStart();
+    console.log('   [dub-prep] ' + (clicked ? 'clicked 开始配音 -> entering dubbing.' : '开始配音 button not found.'));
+    await wait(2000);
     return { ok: true };
   }
 
