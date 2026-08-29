@@ -372,11 +372,12 @@ async function enterFromList(kind) {
       return 'unitWordListV2->done-or-none';   // 两部分都已"再做一次" -> 整项完成
     }
     if(kind==='bagList'){
-      // 作业四(听说同步) 的详情列表: click 再做一次 -> paperScore, then 重做 -> re-enter paperDetail.
-      // This lets watch continue through every sub-exercise after each one submits and returns here.
+      // 作业详情：里面含多项内容(单词/句子/课文/趣味配音等，题目类型可不同)，可能有"去完成"项。
+      // 通用机制：依次点开「去完成」项，每一项由 detect() 识别题型后自动完成；没有"去完成"即全部完成。
       function leaf(t){return [...document.querySelectorAll('*')].filter(function(e){return e.children.length===0 && (e.innerText||'').trim()===t;});}
-      var redoBtn=leaf('再做一次'); if(redoBtn.length) redoBtn[0].click();
-      return 'bagList->redo-again';
+      var goBtn=leaf('去完成');
+      if(goBtn.length){ goBtn[0].click(); return 'bagList->go'; }
+      return 'bagList->done-or-none';   // 全部"再做一次" -> 整项完成，不重做(避免循环)
     }
     return null;
   })()`);
@@ -816,7 +817,7 @@ async function main() {
         const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
         const r = snap.enter === 'paperScore' ? ((await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
         if (r && /done-or-none|fallback/.test(r)) { supKind = snap.enter; supUntil = Date.now() + 30000; console.log('   "' + snap.enter + '" 无未完成可自动做; 30s内不再重开。'); }
-        else if (r && /->redo|->detail|->read|->choice|->redo/.test(r)) { supKind = null; supUntil = 0; }
+        else if (r && /->go|->redo|->detail|->read|->choice/.test(r)) { supKind = null; supUntil = 0; }
         await wait(1200); continue;
       }
       // Let paperDetail record steps (sub===4) through even though they auto-start recording:
@@ -916,7 +917,7 @@ async function main() {
             if (res && /done-or-none|fallback/.test(res)) {
               suppressKind = snap.enter; suppressUntil = Date.now() + 30000;
               console.log('   [watch] "' + snap.enter + '" 无未完成可自动做; 30s内不再重开。');
-            } else if (res && /->redo|->detail|->read|->choice|->redo/.test(res)) {
+            } else if (res && /->go|->redo|->detail|->read|->choice/.test(res)) {
               suppressKind = null; suppressUntil = 0;
             }
             await wait(1200); continue;
