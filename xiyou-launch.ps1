@@ -21,10 +21,21 @@ $Port   = $Cfg.port
 $Debug  = "$($Cfg.cdpUrl):$Port/json"
 $Node   = 'node'
 $AutoScript = Join-Path $Root 'xiyou-auto.js'
+$SetDev = Join-Path $Root 'audio-tool\setdev\bin\Release\net6.0\setdev.exe'
 
 function Test-Port { try { $null = Invoke-RestMethod $Debug -TimeoutSec 2; return $true } catch { return $false } }
 
 Write-Host '=== Xiyou English: auto-read launcher ===' -ForegroundColor Cyan
+
+# 0) Ensure the app's microphone is the virtual cable (the app records via its native engine from
+#    the OS-default mic; the getUserMedia override does NOT apply). Keep render on the real device
+#    (routing render to the cable makes the CABLE Input->Output loopback silent, giving 0 scores).
+if ($Cfg.useCableMicOverride -and (Test-Path $SetDev)) {
+  try {
+    & $SetDev capture $Cfg.cableMicDevice 2>$null | Out-Null
+    Write-Host ('Audio: default mic = ' + $Cfg.cableMicDevice) -ForegroundColor DarkGray
+  } catch { }
+}
 
 # 1) Make sure the client is running with the debug port.
 if (-not (Test-Port)) {

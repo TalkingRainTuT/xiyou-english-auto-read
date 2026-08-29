@@ -154,13 +154,13 @@ async function detect() {
     if(r){var cp=r.currentParagraph||{},pl=r.textParagraphList||[];var url=cp.audioUrl||(pl[0]&&pl[0].audioUrl)||'';var win=Math.ceil((cp.sectionEndTime||0)-(cp.sectionBeginTime||0));if(!win||win<10)win=(r.duration||30);return {type:'text',found:true,index:r.curIndex,total:pl.length,text:(cp.originalText||'').slice(0,60),audioUrl:url,recording:rec(r),windowSec:win};}
     var ch=find('chooseTranslateV2');
     if(ch){var it=ch.list[ch.listIndex]||{};var ct=it.chooseTitleType||{};var ot=ct.optionsTypeList||[];var ci=-1;for(var oi=0;oi<ot.length;oi++){if(ot[oi].answer){ci=oi;break;}}return {type:'choice',found:true,index:ch.listIndex,total:(ch.list||[]).length,text:it.name||'',answerIndex:ci,optionCount:ot.length,recording:false};}
-    // List screens: the user opens a homework and lands here first; we auto-enter the runnable part.
+    // List screens: only auto-navigate WITHIN a homework the user already opened.
+    // We do NOT auto-open whole homework items from bagList (the user picks which homework),
+    // which prevents "forcibly opening a homework / looping".
     var al=find('accentList');
     if(al){return {type:'enter',found:true,enter:'accentList',recording:false};}
     var uw=find('unitWordListV2');
     if(uw){return {type:'enter',found:true,enter:'unitWordListV2',recording:false};}
-    var bg=find('bagList');
-    if(bg){return {type:'enter',found:true,enter:'bagList',recording:false};}
     return {type:null,found:false};
   })()`);
 }
@@ -219,24 +219,24 @@ async function enterFromList(kind) {
     if(kind==='accentList'){ var a=find('accentList'); if(a&&a.list&&a.list.length&&typeof a.detail==='function'){a.detail(0);return 'accentList->detail';} }
     if(kind==='unitWordListV2'){
       // On this group screen there are two parts: 朗读单词 (reading) and 看义选词 (choice).
-      // We complete reading first, then on the next visit (after reading submits & returns here)
-      // we auto-open the choice part. For each part, click its row's 再做一次/去完成 button.
+      // Only auto-open a part whose action is "去完成" (not yet done). If a part is already
+      // done it shows "再做一次" — we skip it so we never redo / loop.
       function clickRow(label){
         var row=[...document.querySelectorAll('*')].find(function(e){var t=(e.innerText||'').trim();return t===label&&e.children.length===0;});
-        if(row){var card=row;for(var i=0;i<4&&card;i++){card=card.parentElement;if(card){var b=card.querySelector('.btn')||[...card.querySelectorAll('div,span,button')].find(function(x){var t=(x.innerText||'').trim();return t==='再做一次'||t==='去完成';});if(b){b.click();return true;}}}}
+        if(!row) return false;
+        var card=row;for(var i=0;i<4&&card;i++){card=card.parentElement;if(card){
+          var b=card.querySelector('.btn')||[...card.querySelectorAll('div,span,button')].find(function(x){var t=(x.innerText||'').trim();return t==='去完成'||t==='再做一次';});
+          if(b){
+            var bt=(b.innerText||'').trim();
+            if(bt!=='去完成') return false;   // already done -> skip to avoid redo/loop
+            b.click(); return true;
+          }
+        }}
         return false;
       }
       if(readDone){ if(clickRow('看义选词')) return 'unitWordListV2->choice'; }
       else { if(clickRow('朗读单词')) return 'unitWordListV2->read'; }
-      // fallback: click any available action button
-      var btns=[...document.querySelectorAll('div,span,button')].filter(function(e){var t=(e.innerText||'').trim();return (t==='再做一次'||t==='去完成');});
-      if(btns.length) btns[0].click();
-      return 'unitWordListV2->fallback';
-    }
-    if(kind==='bagList'){
-      // open the first runnable homework item (first .list with a 去完成 button)
-      var first=[...document.querySelectorAll('.list')].find(function(e){var b=e.querySelector('.btn');return b&&(b.innerText||'').includes('去完成');});
-      if(first){var bb=first.querySelector('.btn');bb.click();return 'bagList->item';}
+      return 'unitWordListV2->done-or-none';   // no not-done part -> do nothing (no loop)
     }
     return null;
   })()`);
@@ -317,13 +317,12 @@ async function processItem() {
   if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
 
   const winSec = (snap.windowSec || 10);
-  // First record of a session: the engine may not be ready yet (WebSocket not up), so wait a bit
-  // longer BEFORE starting the record so the app's mic/engine is listening (fixes first-word score 0).
-  if (snap.type !== 'choice' && !didFirstRecord) {
-    await wait(1500);
+  const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
+  if (first) {
+    await wait(1500);   // engine may not be ready on the very first record (WebSocket up) -> longer warm-up
   }
   await startRecord();
-  await wait(didFirstRecord ? 600 : 1200);
+  await wait(first ? 1200 : 600);
   didFirstRecord = true;
   // Feed the correct pronunciation into the mic by replaying the audio a bounded number of
   // passes, then FORCE-STOP the recording so we don't wait for the app's (long) countdown and
@@ -337,8 +336,11 @@ async function processItem() {
     }
   } else {
     // Word/sentence: replay a few passes (they're short), then stop. Keeps score high w/o waiting.
-    const replayForMs = Math.min(winSec, 25) * 1000;
-    while (Date.now() - start < replayForMs && plays < 12) {
+    // On the FIRST record give more passes / a longer window so the engine captures the correct
+    // pronunciation robustly (the engine is cold on the very first word).
+    const replayForMs = Math.min(winSec, first ? 60 : 25) * 1000;
+    const maxPlays = first ? 18 : 12;
+    while (Date.now() - start < replayForMs && plays < maxPlays) {
       await playAudio(audio); plays++;
     }
   }
@@ -387,7 +389,7 @@ async function main() {
   }
   if (cmd === 'watch') {
     console.log('watch mode: auto-reads any read-aloud exercise that opens. Waiting...');
-    let idle = 0, errCount = 0, stuckRec = 0;
+    let idle = 0, errCount = 0, stuckRec = 0, enterCount = 0;
     for (;;) {
       try {
         const snap = await detect();
@@ -395,7 +397,12 @@ async function main() {
           idle = 0; errCount = 0;
           if (snap.type === 'enter') {
             console.log('[enter] auto-opening: ' + snap.enter);
-            await enterFromList(snap.enter);
+            const res = await enterFromList(snap.enter);
+            enterCount++;
+            // If a list keeps offering nothing new ("done-or-none") too many times, stop auto-entering
+            // to avoid an open/redo loop.
+            if (res && /done-or-none|fallback/.test(res)) { enterCount++; } else { enterCount = 0; }
+            if (enterCount >= 4) { console.log('   [watch] list keeps auto-opening nothing; pausing to avoid a loop.'); enterCount = 0; await wait(3000); }
             await wait(1200);
             continue;
           }
