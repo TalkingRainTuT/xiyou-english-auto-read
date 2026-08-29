@@ -63,7 +63,10 @@ const MAX_WINDOW_MS = (CFG.replayMaxMs || 25) * 1000;   // generous for 10-25s w
 // Safety net: a single audio replay/playback must never block the loop indefinitely (one bad / huge
 // audio would otherwise stall the whole exercise). It still yields for a real, full-length playback.
 const FETCH_TIMEOUT_MS = (CFG.fetchTimeoutMs || 20000); // audio download timeout (ensureAudio)
-const REPLAY_TIMEOUT_MS = (CFG.replayTimeoutMs || 45000); // wall-clock cap for one playAudio call
+// Wall-clock cap for one playAudio call. MUST be >= the longest legitimate reading: a 课文/模仿朗读段落
+// model audio can be ~116s (e.g. 2.8MB). The old 45s default cut such a long audio at 45s, so the script
+// stopRecord'd after only the first 45s -> the latter half ("后半段") was never recorded -> score 0.
+const REPLAY_TIMEOUT_MS = (CFG.replayTimeoutMs || 240000); // allow up to a 4-min passage to play fully
 const TTS_TIMEOUT_MS = (CFG.ttsTimeoutMs || 30000);      // wall-clock cap for the PowerShell TTS render
 // A CDP Runtime.evaluate can silently hang when the app's page is briefly busy (e.g. right after a
 // record step). Without a bound that would stall the whole loop forever (the "作业四卡死" symptom).
