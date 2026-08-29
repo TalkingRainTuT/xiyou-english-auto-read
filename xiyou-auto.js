@@ -65,6 +65,9 @@ const MAX_WINDOW_MS = (CFG.replayMaxMs || 25) * 1000;   // generous for 10-25s w
 const FETCH_TIMEOUT_MS = (CFG.fetchTimeoutMs || 20000); // audio download timeout (ensureAudio)
 const REPLAY_TIMEOUT_MS = (CFG.replayTimeoutMs || 45000); // wall-clock cap for one playAudio call
 const TTS_TIMEOUT_MS = (CFG.ttsTimeoutMs || 30000);      // wall-clock cap for the PowerShell TTS render
+// A CDP Runtime.evaluate can silently hang when the app's page is briefly busy (e.g. right after a
+// record step). Without a bound that would stall the whole loop forever (the "作业四卡死" symptom).
+const EVAL_TIMEOUT_MS = (CFG.evalTimeoutMs || 20000);    // wall-clock cap for one CDP evaluate call
 
 if (!fs.existsSync(AUDIO)) { console.error('audio tool not found: ' + AUDIO); process.exit(1); }
 if (!fs.existsSync(CACHE)) fs.mkdirSync(CACHE, { recursive: true });
@@ -132,7 +135,11 @@ async function client() {
   return cdp;
 }
 async function evaluate(code) {
-  const r = await cdp.call('Runtime.evaluate', { expression: code, returnByValue: true, awaitPromise: true });
+  // Bounded so a busy/blocked page can't stall the loop forever; the caller catches the timeout error.
+  const r = await Promise.race([
+    cdp.call('Runtime.evaluate', { expression: code, returnByValue: true, awaitPromise: true }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('evaluate timeout (' + EVAL_TIMEOUT_MS + 'ms)')), EVAL_TIMEOUT_MS))
+  ]);
   if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
   return r.result && r.result.value;
 }
@@ -488,7 +495,10 @@ async function detailsAnswerText() {
       // keyword match, so we only need to SPEAK ONE canonical answer. Speaking ALL variants concatenated
       // turned a short WAV into a multi-minute one, so double playback blocked each record step for minutes
       // (the "作业四无法正常进行" hang). Return just the first (most canonical) variant.
-      var parts = om.key.split(/[\\n;\\/，,]+/).map(function(s){return s.trim();}).filter(Boolean);
+      // NOTE: split on REAL newlines + punctuation. The old /[\\n;\\/，,]+/ matched a literal backslash-n
+      // (the letter "n") instead of a newline, so it chopped words ("going"->"goi|g") and did NOT break the
+      // alternatives — the resulting "first phrase" was a garbled fragment. Use \n to split on newlines.
+      var parts = om.key.split(/[\n;\/,，]+/).map(function(s){return s.trim();}).filter(Boolean);
       if(parts.length) return parts[0];
     }
     return null;
@@ -642,12 +652,14 @@ async function main() {
     console.log('target=' + (n === Infinity ? 'ALL' : n));
     let done = 0, worstSame = 0, lastKey = null, supKind = null, supUntil = 0;
     while (done < n) {
+      try {
       const snap = await detect();
       if (!snap.found) { console.log('reading screen not detected; is the exercise open? (use watch to auto-wait)'); break; }
       if (snap.type === 'enter') {
         if (snap.enter === supKind && Date.now() < supUntil) { await wait(1500); continue; }
         console.log('[enter] auto-opening: ' + snap.enter);
-        const r = snap.enter === 'paperScore' ? ((await enterPaperScore()) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
+        const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
+        const r = snap.enter === 'paperScore' ? ((await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
         if (r && /done-or-none|fallback/.test(r)) { supKind = snap.enter; supUntil = Date.now() + 30000; console.log('   "' + snap.enter + '" nothing to do; not re-opening for 30s.'); }
         else if (r && /->redo|->detail|->read|->choice|->redo/.test(r)) { supKind = null; supUntil = 0; }
         await wait(1200);
@@ -697,8 +709,25 @@ async function main() {
           if (st) { console.log('   [details] record step stuck; forced nextFlow.'); break; }
         }
       }
+      // Once a record step of menu N is done, remember to start the NEXT re-entry at menu N+1, and if
+      // we landed back on menu 0 (reFormIndex always starts at 0) jump straight to the requested menu.
+      if (snap.type === 'details' && snap.sub === 4 && (typeof snap.menu === 'number')) {
+        detailMenuIdx = Math.max(detailMenuIdx, snap.menu + 1);
+      }
+      if (snap.type === 'details' && detailMenuIdx > 0 && snap.menu === 0) {
+        const g = await gotoDetailsMenu(detailMenuIdx);
+        if (g) console.log('   [run] jumped to details menu ' + detailMenuIdx + ' (' + (DETAIL_MENU_NAMES[detailMenuIdx] || '') + ')');
+      }
       await wait(700);
       if (done >= n) break;
+      } catch (e) {
+        console.log('   [run] error: ' + (e && e.message ? e.message : e));
+        if (/ECONNREFUSED|closed|WebSocket|evaluate timeout/i.test(e && e.message ? e.message : String(e))) {
+          console.log('   [run] connection/eval hiccup; reconnecting...');
+          try { cdp = null; await client(); } catch (e2) { console.log('   [run] reconnect failed: ' + (e2 && e2.message)); }
+        }
+        await wait(1500);
+      }
     }
     console.log('RUN ENDED (' + done + ' processed).');
     return;
