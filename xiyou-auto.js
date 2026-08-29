@@ -142,6 +142,13 @@ async function detect() {
     if(r){var cp=r.currentParagraph||{},pl=r.textParagraphList||[];var url=cp.audioUrl||(pl[0]&&pl[0].audioUrl)||'';var win=Math.ceil((cp.sectionEndTime||0)-(cp.sectionBeginTime||0));if(!win||win<10)win=(r.duration||30);return {type:'text',found:true,index:r.curIndex,total:pl.length,text:(cp.originalText||'').slice(0,60),audioUrl:url,recording:rec(r),windowSec:win};}
     var ch=find('chooseTranslateV2');
     if(ch){var it=ch.list[ch.listIndex]||{};var ct=it.chooseTitleType||{};var ot=ct.optionsTypeList||[];var ci=-1;for(var oi=0;oi<ot.length;oi++){if(ot[oi].answer){ci=oi;break;}}return {type:'choice',found:true,index:ch.listIndex,total:(ch.list||[]).length,text:it.name||'',answerIndex:ci,optionCount:ot.length,recording:false};}
+    // List screens: the user opens a homework and lands here first; we auto-enter the runnable part.
+    var al=find('accentList');
+    if(al){return {type:'enter',found:true,enter:'accentList',recording:false};}
+    var uw=find('unitWordListV2');
+    if(uw){return {type:'enter',found:true,enter:'unitWordListV2',recording:false};}
+    var bg=find('bagList');
+    if(bg){return {type:'enter',found:true,enter:'bagList',recording:false};}
     return {type:null,found:false};
   })()`);
 }
@@ -187,6 +194,28 @@ async function advance() {
     var s=find('accentDetail'); if(s){if(typeof s.goNext==='function'){s.goNext();return 'sentence';}}
     var r=find('read'); if(r){if(typeof r.handleNext==='function'){r.handleNext();return 'text';}}
     var ch=find('chooseTranslateV2'); if(ch){if(typeof ch.nextList==='function'){ch.nextList();return 'choice';}}
+    return null;
+  })()`);
+}
+// Auto-enter a runnable exercise from a list screen (the user lands on these when they open homework).
+async function enterFromList(kind) {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var kind=${JSON.stringify(kind)};
+    if(kind==='accentList'){ var a=find('accentList'); if(a&&a.list&&a.list.length&&typeof a.detail==='function'){a.detail(0);return 'accentList->detail';} }
+    if(kind==='unitWordListV2'){
+      // enter the 朗读单词 (reading) row by clicking its "再做一次/去完成" button
+      var btns=[...document.querySelectorAll('div,span,button')].filter(function(e){var t=(e.innerText||'').trim();return (t==='再做一次'||t==='去完成');});
+      var row=[...document.querySelectorAll('*')].find(function(e){var t=(e.innerText||'').trim();return t==='朗读单词'&&e.children.length===0;});
+      // click the 朗读单词 row's sibling action
+      if(row){var card=row;for(var i=0;i<4&&card;i++){card=card.parentElement;if(card){var b=card.querySelector('.btn')||[...card.querySelectorAll('div,span,button')].find(function(x){var t=(x.innerText||'').trim();return t==='再做一次'||t==='去完成';});if(b){b.click();return 'unitWordListV2->read';}}}}
+      if(btns.length){btns[0].click();return 'unitWordListV2->btn';}
+    }
+    if(kind==='bagList'){
+      // open the first runnable homework item (first .list with a 去完成 button)
+      var first=[...document.querySelectorAll('.list')].find(function(e){var b=e.querySelector('.btn');return b&&(b.innerText||'').includes('去完成');});
+      if(first){var bb=first.querySelector('.btn');bb.click();return 'bagList->item';}
+    }
     return null;
   })()`);
 }
@@ -299,6 +328,12 @@ async function main() {
     while (done < n) {
       const snap = await detect();
       if (!snap.found) { console.log('reading screen not detected; is the exercise open? (use watch to auto-wait)'); break; }
+      if (snap.type === 'enter') {
+        console.log('[enter] auto-opening: ' + snap.enter);
+        await enterFromList(snap.enter);
+        await wait(1200);
+        continue;
+      }
       if (snap.recording) { console.log('currently recording; waiting...'); await wait(1500); continue; }
       const key = snap.type + ':' + snap.index;
       if (lastKey === key) { worstSame++; } else { worstSame = 0; lastKey = key; }
@@ -322,6 +357,12 @@ async function main() {
       const snap = await detect();
       if (snap.found) {
         idle = 0;
+        if (snap.type === 'enter') {
+          console.log('[enter] auto-opening: ' + snap.enter);
+          await enterFromList(snap.enter);
+          await wait(1200);
+          continue;
+        }
         if (snap.recording) { await wait(1500); continue; }
         await processItem();
         await advance();
