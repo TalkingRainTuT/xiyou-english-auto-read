@@ -132,16 +132,6 @@ node xiyou-auto.js watch     # 持续循环：自动识别并朗读任何打开�
 > 但音频输入输出、客户端路径、启动方式是平台相关。以下为**理论适配方案，未在 Mac 实测**，
 > 请谨慎使用；如能提供可运行的 Mac 客户端和虚拟声卡，我可进一步适配实测。
 
-### Mac 与 Windows 的差异对照
-
-| 环节 | Windows（已实测） | macOS（理论方案） |
-| --- | --- | --- |
-| 客户端 | `西柚英语个人版.exe` | 西柚英语 mac 版 App（若有） |
-| 虚拟声卡 | VB-Cable | **BlackHole** 或 **Loopback** |
-| 回放音频 | `.NET NAudio` 工具 `xiaoyou-audio.exe` | 命令行 `afplay` / `ffplay` |
-| 启动方式 | `.bat` / `xiyou-launch.ps1` | `node xiyou-auto.js watch` |
-| 麦克风只给西柚用 | `getUserMedia` 覆盖（通用） | 同样通用（Chromium/Electron） |
-
 ### Mac 上的配置（改 `config.json`）
 
 ```json
@@ -172,8 +162,6 @@ cd "$(dirname "$0")"
 echo "请在打开的西柚窗口里手动进入朗读/选词作业..."
 node xiyou-auto.js watch
 ```
-
-Mac 用户如能给到可运行的 Mac 客户端和虚拟声卡，我可以进一步适配并实测；否则以上是理论适配方案，请谨慎使用。
 
 ## 技术栈
 
