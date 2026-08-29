@@ -509,6 +509,21 @@ async function forceDetailsNext() {
   })()`);
 }
 
+// Jump paperDetail to a specific sub-exercise menu (reFormIndex always starts at menu 0, so when we
+// want a later menu we set menuIndex directly and reload). Returns true if the menu changed.
+async function gotoDetailsMenu(idx) {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('paperDetail'); if(!d) return false;
+    if (typeof idx !== 'number' || idx < 0 || idx >= d.list.length) return false;
+    var before = d.menuIndex;
+    d.menuIndex = idx;
+    if (typeof d.getList === 'function') d.getList();
+    else if (typeof d.readList === 'function') d.readList();
+    return (d.menuIndex !== before) || true;
+  })()`);
+}
+
 async function processItem() {
   const snap = await detect();
   if (!snap.found) return { ok: false, reason: 'no item' };
