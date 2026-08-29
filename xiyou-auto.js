@@ -204,6 +204,14 @@ async function detect() {
     if(r){var cp=r.currentParagraph||{},pl=r.textParagraphList||[];var url=cp.audioUrl||(pl[0]&&pl[0].audioUrl)||'';var win=Math.ceil((cp.sectionEndTime||0)-(cp.sectionBeginTime||0));if(!win||win<10)win=(r.duration||30);return {type:'text',found:true,index:r.curIndex,total:pl.length,text:(cp.originalText||'').slice(0,60),audioUrl:url,recording:rec(r),windowSec:win};}
     var ch=find('chooseTranslateV2');
     if(ch){var it=ch.list[ch.listIndex]||{};var ct=it.chooseTitleType||{};var ot=ct.optionsTypeList||[];var ci=-1;for(var oi=0;oi<ot.length;oi++){if(ot[oi].answer){ci=oi;break;}}return {type:'choice',found:true,index:ch.listIndex,total:(ch.list||[]).length,text:it.name||'',answerIndex:ci,optionCount:ot.length,recording:false};}
+    // 作业二 趣味配音 (DubbingIndex): the student dubs a video line by line; the lines are the
+    // English sentences in dubDetail.originalText (newline-separated). Record via egStartRecord,
+    // finalize+score via EngineEvaluat.stopRecord(), advance via nextSentence().
+    var db=find('DubbingIndex');
+    if(db){var ddd=db._data||{},dddeta=ddd.dubDetail||{},didx=ddd.sentenceIndex||0;
+      var dlines=String(dddeta.originalText||'').split(/\\n/).map(function(s){return s.trim();}).filter(Boolean);
+      var dline=dlines[didx]||'';
+      return {type:'dub',found:true,index:didx,total:dlines.length,text:dline,audioUrl:(dddeta.backgroundAudioUrl||''),recording:!!ddd.egRecordState,windowSec:(dddeta.videoDuration||36),menu:0};}
     // List screens: only auto-navigate WITHIN a homework the user already opened.
     // We do NOT auto-open whole homework items from bagList (the user picks which homework),
     // which prevents "forcibly opening a homework / looping".
@@ -301,6 +309,8 @@ async function advance() {
     }
     var r=find('read'); if(r){if(typeof r.handleNext==='function'){r.handleNext();return 'text';}}
     var ch=find('chooseTranslateV2'); if(ch){if(typeof ch.nextList==='function'){ch.nextList();return 'choice';}}
+    // 趣味配音 (DubbingIndex): advance to the next sentence.
+    var db=find('DubbingIndex'); if(db){ if(typeof db.nextSentence==='function'){ db.nextSentence(); return 'dub'; } }
     return null;
   })()`);
 }
@@ -574,6 +584,32 @@ async function gotoDetailsMenu(idx) {
   })()`);
 }
 
+// 趣味配音 (DubbingIndex) 录音开始/停止：逐句录制，EngineEvaluat.stopRecord() 定稿+评分。
+async function dubStart() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); if(!d) return false;
+    var st=d._data&&d._data.egRecordState;
+    if(!st && typeof d.egStartRecord==='function'){ try{ d.egStartRecord(); }catch(e){} }
+    return !!(d._data&&d._data.egRecordState);
+  })()`);
+}
+async function dubStop() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); if(!d) return false;
+    if(d.EngineEvaluat && typeof d.EngineEvaluat.stopRecord==='function'){ d.EngineEvaluat.stopRecord(); return true; }
+    else if(typeof d.stopRecord==='function'){ d.stopRecord(); return true; }
+    return false;
+  })()`);
+}
+async function dubRecording() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); if(!d) return false; return !!(d._data&&d._data.egRecordState);
+  })()`);
+}
+
 async function processItem() {
   const snap = await detect();
   if (!snap.found) return { ok: false, reason: 'no item' };
@@ -585,6 +621,28 @@ async function processItem() {
     const picked = await chooseAnswer();
     console.log('   picked correct option: ' + (picked ? picked.text : '?'));
     await wait(800);
+    return { ok: true };
+  }
+
+  // 作业二 趣味配音 (DubbingIndex): pronunciation-scored dubbing, one line at a time. Reuse the
+  // 角色扮演 TTS approach — synthesize the current line, replay it into the mic, then stop the
+  // recording so the engine scores the pronunciation, then advance to the next sentence.
+  if (snap.type === 'dub') {
+    const started = await dubStart();
+    if (!started) return { ok: false, reason: 'dub record not started' };
+    await wait(600);
+    if (snap.text) {
+      const awav = await synthAnswer(snap.text);
+      if (awav) {
+        await playAudio(awav); await playAudio(awav);
+        console.log('   [dub] replayed TTS line (' + snap.text.slice(0, 30) + ').');
+      }
+    }
+    await wait(500);
+    await dubStop();
+    const end = Date.now() + 2500;
+    while ((await dubRecording()) && Date.now() < end) { await wait(1000); }
+    console.log('   [dub] line ended (recording=' + (await dubRecording()) + ')');
     return { ok: true };
   }
 
@@ -674,9 +732,39 @@ async function processItem() {
   return { ok: true };
 }
 
+// 自动删除多余录音：清理 audio-cache 里过期的文件，避免旧/无用录音越积越多。
+// - TTS 合成 WAV (ano_*.wav) 会随每次答案文本重新生成，删除旧的最安全（默认 >1 天即删）。
+// - 其它缓存音频(模型/单词/课文 mp3) 以 URL+文本哈希命名，删除后会按需重新下载（默认 >7 天）。
+// 通过 config.json 的 cacheTtsMaxAgeDays / cacheAudioMaxAgeDays 调整，设为 0 表示该项不清理。
+function cleanupCache() {
+  try {
+    if (!fs.existsSync(CACHE)) return 0;
+    const ttsMaxAge  = Math.max(0, (CFG.cacheTtsMaxAgeDays   || 1) * 86400000);
+    const audioMaxAge= Math.max(0, (CFG.cacheAudioMaxAgeDays || 7) * 86400000);
+    const now = Date.now();
+    let deleted = 0;
+    for (const name of fs.readdirSync(CACHE)) {
+      const fp = path.join(CACHE, name);
+      try {
+        const st = fs.statSync(fp);
+        if (!st.isFile()) continue;
+        const isTts = /^ano_/i.test(name);
+        const maxAge = isTts ? ttsMaxAge : audioMaxAge;
+        if (maxAge > 0 && (now - st.mtimeMs) > maxAge) {
+          fs.unlinkSync(fp);
+          deleted++;
+        }
+      } catch (e) {}
+    }
+    if (deleted) console.log('   [cache] cleaned ' + deleted + ' stale recording file(s) from ' + CACHE);
+    return deleted;
+  } catch (e) { return 0; }
+}
+
 async function main() {
   await client();
   await ensureCableMic();
+  cleanupCache();                       // 自动删除多余/过期录音
   const cmd = process.argv[2] || 'run';
   if (cmd === 'status') { console.log(JSON.stringify(await detect(), null, 2)); return; }
   if (cmd === 'run' || cmd === 'runall') {
