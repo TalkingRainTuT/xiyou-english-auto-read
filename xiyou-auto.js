@@ -42,6 +42,13 @@ let CFG = {};
 try { CFG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch (e) { console.error('could not read config.json: ' + e.message); process.exit(1); }
 
 const PORT = CFG.port || 9222;
+// Tracks whether we've completed the reading part of a unitWordListV2 group, so the next
+// time we land back on that screen we auto-open the word-choice (看义选词) part instead.
+let readDone = false;
+// The scoring engine (engine.js) connects a WebSocket lazily; on the FIRST record in a session
+// it may not be ready yet, so the first word's recording can be silent (score 0). We give the
+// first record a longer warm-up wait.
+let didFirstRecord = false;
 const DEBUG = (CFG.cdpUrl || 'http://127.0.0.1') + ':' + PORT;
 const APP_PREFIX = CFG.appUrlPrefix || 'https://student.xiyouyingyu.com';
 const MIC_DEVICE = CFG.micDevice || 'CABLE Output';
@@ -204,17 +211,27 @@ async function advance() {
 }
 // Auto-enter a runnable exercise from a list screen (the user lands on these when they open homework).
 async function enterFromList(kind) {
+  const rd = readDone;   // capture Node-side flag so it's available inside the page JS below
   return evaluate(`(function(){
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
     var kind=${JSON.stringify(kind)};
+    var readDone=${JSON.stringify(rd)};
     if(kind==='accentList'){ var a=find('accentList'); if(a&&a.list&&a.list.length&&typeof a.detail==='function'){a.detail(0);return 'accentList->detail';} }
     if(kind==='unitWordListV2'){
-      // enter the 朗读单词 (reading) row by clicking its "再做一次/去完成" button
+      // On this group screen there are two parts: 朗读单词 (reading) and 看义选词 (choice).
+      // We complete reading first, then on the next visit (after reading submits & returns here)
+      // we auto-open the choice part. For each part, click its row's 再做一次/去完成 button.
+      function clickRow(label){
+        var row=[...document.querySelectorAll('*')].find(function(e){var t=(e.innerText||'').trim();return t===label&&e.children.length===0;});
+        if(row){var card=row;for(var i=0;i<4&&card;i++){card=card.parentElement;if(card){var b=card.querySelector('.btn')||[...card.querySelectorAll('div,span,button')].find(function(x){var t=(x.innerText||'').trim();return t==='再做一次'||t==='去完成';});if(b){b.click();return true;}}}}
+        return false;
+      }
+      if(readDone){ if(clickRow('看义选词')) return 'unitWordListV2->choice'; }
+      else { if(clickRow('朗读单词')) return 'unitWordListV2->read'; }
+      // fallback: click any available action button
       var btns=[...document.querySelectorAll('div,span,button')].filter(function(e){var t=(e.innerText||'').trim();return (t==='再做一次'||t==='去完成');});
-      var row=[...document.querySelectorAll('*')].find(function(e){var t=(e.innerText||'').trim();return t==='朗读单词'&&e.children.length===0;});
-      // click the 朗读单词 row's sibling action
-      if(row){var card=row;for(var i=0;i<4&&card;i++){card=card.parentElement;if(card){var b=card.querySelector('.btn')||[...card.querySelectorAll('div,span,button')].find(function(x){var t=(x.innerText||'').trim();return t==='再做一次'||t==='去完成';});if(b){b.click();return 'unitWordListV2->read';}}}}
-      if(btns.length){btns[0].click();return 'unitWordListV2->btn';}
+      if(btns.length) btns[0].click();
+      return 'unitWordListV2->fallback';
     }
     if(kind==='bagList'){
       // open the first runnable homework item (first .list with a 去完成 button)
@@ -294,8 +311,14 @@ async function processItem() {
   if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
 
   const winSec = (snap.windowSec || 10);
+  // First record of a session: the engine may not be ready yet (WebSocket not up), so wait a bit
+  // longer BEFORE starting the record so the app's mic/engine is listening (fixes first-word score 0).
+  if (snap.type !== 'choice' && !didFirstRecord) {
+    await wait(1500);
+  }
   await startRecord();
-  await wait(600);
+  await wait(didFirstRecord ? 600 : 1200);
+  didFirstRecord = true;
   // Feed the correct pronunciation into the mic by replaying the audio a bounded number of
   // passes, then FORCE-STOP the recording so we don't wait for the app's (long) countdown and
   // so egRecordState clears (which lets goNext/handleNext advance -> fixes sentence repeating).
@@ -345,6 +368,7 @@ async function main() {
       if (worstSame >= 3) { console.log('no progress for 3 rounds (idx=' + snap.index + '); stopping to avoid a loop.'); break; }
       const r = await processItem();
       done++;
+      if (snap.type === 'word' || snap.type === 'text') readDone = true;   // reading part done -> next time on unitWordListV2 open choice
       if (!r.ok) { console.log('   !! ' + r.reason); break; }
       // Advance to the next item (for text this also submits the last paragraph).
       // If the component is already gone (submitted/navigated), advance() is a safe no-op.
@@ -380,6 +404,7 @@ async function main() {
             continue;
           }
           stuckRec = 0;
+          if (snap.type === 'word' || snap.type === 'text') readDone = true;   // reading done -> next time on unitWordListV2 open choice
           await processItem();
           await advance();
           await wait(700);
