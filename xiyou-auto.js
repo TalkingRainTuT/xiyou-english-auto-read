@@ -686,6 +686,11 @@ async function main() {
       if (!snap.found) { console.log('reading screen not detected; is the exercise open? (use watch to auto-wait)'); break; }
       if (snap.type === 'enter') {
         if (snap.enter === supKind && Date.now() < supUntil) { await wait(1500); continue; }
+        // 作业四 fully done -> stop re-opening it (avoid the 再做一次 loop).
+        if ((snap.enter === 'paperScore' || snap.enter === 'bagList') && detailMenuIdx >= DETAIL_MENU_NAMES.length) {
+          console.log('   [run] 作业四 的子练习已全部完成; 停止重开。');
+          break;
+        }
         console.log('[enter] auto-opening: ' + snap.enter);
         const tgt = DETAIL_MENU_NAMES[detailMenuIdx] || DETAIL_MENU_NAMES[0];
         const r = snap.enter === 'paperScore' ? ((await enterPaperScore(tgt)) ? 'paperScore->redo' : 'paperScore->none') : await enterFromList(snap.enter);
@@ -779,6 +784,16 @@ async function main() {
             }
             // Cooldown after finishing an exercise: don't instantly re-open the list.
             if (now < cooldownUntil) {
+              await wait(1500);
+              continue;
+            }
+            // 作业四 (paperDetail) fully done: its three sub-exercises (模仿朗读/角色扮演/故事复述) have all been
+            // processed once (detailMenuIdx reached the count), so the further "在做一次/重做" buttons just loop it.
+            // Do NOT fall back to DETAIL_MENU_NAMES[0] again — suppress re-opening the homework for a long time.
+            if ((snap.enter === 'paperScore' || snap.enter === 'bagList') && detailMenuIdx >= DETAIL_MENU_NAMES.length) {
+              suppressKind = snap.enter;
+              suppressUntil = now + 3600000;
+              console.log('   [watch] 作业四 的子练习已全部完成; 不再自动重做 (suppress 1h).');
               await wait(1500);
               continue;
             }
