@@ -480,7 +480,12 @@ async function processItem() {
     return { ok: true, record: true };
   }
 
-
+  // Cache key must be per-WORD (text + url hash), NOT per index: the same index in a different
+  // exercise is a different word, and a stale "word_0.mp3" from a previous unit would replay the
+  // wrong pronunciation -> the engine hears a different word -> score ~0. Keying by text+url hash
+  // guarantees each word's correct audio is replayed (fixes word-reading scores of 0).
+  const audioKey = slug(snap.text).slice(0, 40) + '_' + hashUrl(snap.audioUrl);
+  const audio = await ensureAudio(snap.type + '_' + audioKey, snap.audioUrl);
   if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
 
   const winSec = (snap.windowSec || 10);
