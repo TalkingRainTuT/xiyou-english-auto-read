@@ -463,19 +463,34 @@ async function ensureRecordStarted() {
   })()`);
 }
 
-// paperDetail record step: the reference audio for what to say. For the record step (type 4) the
-// model audio isn't on the record process itself; it lives on the preceding 播放原文/播放题干 step
-// (processTypeId 1/2) in the same smallList. We fetch that step's audioURL. Returns a cached mp3 path
-// or null.
+// paperDetail record step: the reference audio for what to say. The record step (type 4) asks the student
+// to READ a full passage (模仿朗读/故事复述: pronunciation-scored, om.key empty). The correct model audio is
+// the FULl paragraph reading, which lives on a preceding 播放原文/播放题干 step (processTypeId 1/2) whose text
+// matches the record step's refText. Picking the NEArest preceding audio instead grabs a short segment, so the
+// app hears a fragment then silence -> mismatch / score 0. We score each preceding audio by how well its text
+// matches the record step's refText (or, with no refText, by length), and return the best. Null if none.
 async function detailsAudio() {
   const url = await evaluate(`(function(){
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    function clean(s){return String(s||'').replace(/<[^>]*>/g,' ').replace(/[\\s]+/g,' ').trim();}
     var d=find('paperDetail'); if(!d) return null;
     var menu=d.list[d.menuIndex], sl=menu.smallList[d.smallIndex];
-    // prefer the nearest preceding step with an audioURL (播放题干/播放原文/播放视频)
-    for(var i=d.seq-1; i>=0; i--){ var x=sl.processList[i]; var u=x.infoData&&x.infoData.audioURL; if(u) return u; }
-    // fall back to the record step's own info
-    var cur=sl.processList[d.seq]; return (cur.infoData&&cur.infoData.audioURL)||null;
+    var cur=sl.processList[d.seq]||{};
+    var rec=clean((cur.oralTypeModel&&cur.oralTypeModel.refText)||'');
+    var best=null, bestScore=-1;
+    for(var i=d.seq-1; i>=0; i--){
+      var x=sl.processList[i]||{}; var u=(x.infoData&&x.infoData.audioURL)||''; if(!u) continue;
+      var t=clean((x.infoData&&x.infoData.showTxt)||'');
+      var score=0;
+      if(rec){ // leading-char match with the passage the student must read (full paragraph wins)
+        for(var k=0;k<Math.min(rec.length,t.length,80);k++){ if(rec[k]===t[k]) score++; else break; }
+      } else { // no refText -> prefer the longest text (the full passage, not a short segment)
+        score=100000+t.length;
+      }
+      if(score>bestScore){ bestScore=score; best=u; }
+    }
+    if(best) return best;
+    return (cur.infoData&&cur.infoData.audioURL)||null;   // fall back to the record step's own audio
   })()`);
   if (!url) return null;
   const key = slug('details_' + url);
@@ -593,7 +608,19 @@ async function processItem() {
     }
     if (!replayed) {
       const daudio = await detailsAudio();
-      if (daudio) { await playAudio(daudio); await playAudio(daudio); console.log('   [details] replayed model audio.'); }
+      if (daudio) {
+        // 模仿朗读/故事复述 are pronunciation-scored: the app records the WHOLE reading window and scores it
+        // against the model. Replay the (full-length) model audio and keep playing until the window is filled,
+        // so the mic hears the correct reading for the whole window (a short fragment then silence -> 0).
+        const winSec = Math.max(snap.windowSec || 0, 15);
+        const t0 = Date.now();
+        let plays = 0;
+        while (Date.now() - t0 < winSec * 1000 && plays < 4) {
+          await playAudio(daudio);
+          plays++;
+        }
+        console.log('   [details] replayed model audio (' + plays + 'x for ' + winSec + 's window).');
+      }
     }
     await wait(600);
     await stopRecord();
