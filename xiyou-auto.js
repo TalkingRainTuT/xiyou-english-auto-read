@@ -495,10 +495,12 @@ async function detailsAnswerText() {
       // keyword match, so we only need to SPEAK ONE canonical answer. Speaking ALL variants concatenated
       // turned a short WAV into a multi-minute one, so double playback blocked each record step for minutes
       // (the "作业四无法正常进行" hang). Return just the first (most canonical) variant.
-      // NOTE: split on REAL newlines + punctuation. The old /[\\n;\\/，,]+/ matched a literal backslash-n
-      // (the letter "n") instead of a newline, so it chopped words ("going"->"goi|g") and did NOT break the
-      // alternatives — the resulting "first phrase" was a garbled fragment. Use \n to split on newlines.
-      var parts = om.key.split(/[\n;\/,，]+/).map(function(s){return s.trim();}).filter(Boolean);
+      // NOTE: the key separates the alternative answers by real newlines and punctuation, and this body is a
+      // template literal: write a DOUBLE backslash before the "n" (and before the slash) so the page receives
+      // an escaped newline, not a literal newline. A SINGLE backslash would inject a raw line break into the
+      // regex/comment and the page would throw "SyntaxError: Unexpected identifier" (the "无分数/反复做第一部分"
+      // regression), so DO NOT single-escape. Split on the real newline/punctuation separators.
+      var parts = om.key.split(/[\\n;\\/，,]+/).map(function(s){return s.trim();}).filter(Boolean);
       if(parts.length) return parts[0];
     }
     return null;
