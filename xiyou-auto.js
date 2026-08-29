@@ -402,7 +402,7 @@ async function main() {
   }
   if (cmd === 'watch') {
     console.log('watch mode: auto-reads any read-aloud exercise that opens. Waiting...');
-    let idle = 0, errCount = 0, stuckRec = 0, suppressKind = null, suppressUntil = 0;
+    let idle = 0, errCount = 0, stuckRec = 0, suppressKind = null, suppressUntil = 0, cooldownUntil = 0;
     for (;;) {
       try {
         const snap = await detect();
@@ -413,6 +413,11 @@ async function main() {
             // (avoids the endless auto-open/pause loop on a completed exercise).
             const now = Date.now();
             if (suppressKind === snap.enter && now < suppressUntil) {
+              await wait(1500);
+              continue;
+            }
+            // Cooldown after finishing an exercise: don't instantly re-open the list.
+            if (now < cooldownUntil) {
               await wait(1500);
               continue;
             }
@@ -443,6 +448,9 @@ async function main() {
           if (snap.type === 'word' || snap.type === 'text') readDone = true;   // reading done -> next time on unitWordListV2 open choice
           await processItem();
           await advance();
+          // After completing a runnable exercise it often returns to a list screen. Cooldown all
+          // auto-entering so it doesn't instantly re-open the just-finished exercise (review loop).
+          cooldownUntil = Date.now() + 12000;
           await wait(700);
         } else {
           idle++; stuckRec = 0;
