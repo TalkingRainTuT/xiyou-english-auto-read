@@ -792,25 +792,20 @@ async function processItem() {
     // 预合成当前句 TTS，避免"点录音后再合成"导致录音开头 0.5~1 秒没录上(第一句前半段缺失)。
     const line = (await dubCurrentText()) || snap.text;
     const awav = line ? await synthAnswer(line) : null;
-    // 确保录音已真正开始(点击 div.record 后确认 egRecordState)，避免个别句子"没录上"。
-    await dubClickRecord();
+    // 只点一次录音按钮(不要重复点——它可能是"开始/停止"切换，再点一次会把刚开始的录音又关掉，导致"还没录就跳题")，
+    // 然后轮询确认录音真正开始(egRecordState=true)，避免个别句子"没录上"。
+    const clicked = await dubClickRecord();
     let recStarted = false;
-    for (let r = 0; r < 4; r++) {
-      recStarted = await dubRecording();
-      if (recStarted) break;
-      await wait(400);
-      await dubClickRecord();
-    }
-    console.log('   [dub] ' + (recStarted ? 'record started (egRecordState=true).' : 'record not started after retries.'));
+    for (let r = 0; r < 5; r++) { recStarted = await dubRecording(); if (recStarted) break; await wait(500); }
+    console.log('   [dub] ' + (clicked ? 'clicked record button.' : 'record button not found.') + ' recording=' + recStarted);
     if (recStarted) {
       // 首次录音给引擎留预热(WebSocket 冷启动可能把开头录成静音/空档)。
       if (!didFirstDubRecord) { await wait(700); didFirstDubRecord = true; }
       // 回放 TTS 且只放一遍：连放两遍会让同一句被录到两次("不清晰")或超窗截断("只录到部分")，导致 0 分。
       if (awav) { await playAudio(awav); console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').'); }
-      // 收一个小尾巴后强制停录，只让引擎录到一遍清晰整句，不再依赖 app 不可预测的自停。
-      await wait(400);
-      await dubStop();
-      const endD = Date.now() + 5000;
+      // 等 app 自然完成该段录音/评分(有界)。不要主动 dubStop() 强制停录——那会让 app 提前定稿并跳到下一题，
+      // 造成"开始录音了但还没录就跳题"。只放一遍不再重复，引擎录到的就是一遍清晰整句。
+      const endD = Date.now() + 12000;
       while ((await dubRecording()) && Date.now() < endD) { await wait(600); }
       console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
     }
