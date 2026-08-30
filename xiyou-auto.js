@@ -564,17 +564,23 @@ async function detailsAnswerText() {
 
 // Synthesize the given text into a WAV via the Windows System.Speech engine (PS) at a moderate rate and
 // 16 kHz mono to keep the file small, cache it, and return the file path. Falls back to null on failure.
+// 文本写进 UTF-8 临时文件再让 PS 读取朗读：避免句子里的双引号/$/反引号等把 -Command 内联字符串弄坏，
+// 导致 TTS 返回 null -> app 录到静音 -> 该句 0 分。
 async function synthAnswer(text) {
   if (!text) return null;
   const key = 'ano_' + slug(text).slice(0, 40) + '_' + hashUrl(text) + '.wav';
   const f = path.join(CACHE, key);
   if (fs.existsSync(f) && fs.statSync(f).size > 0) return f;
-  const safe = f.replace(/\\/g, '\\\\');
-  const ps = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 0; $s.SetOutputToWaveFile('" + safe + "'); $s.Speak(" + JSON.stringify(text) + "); $s.Dispose();";
+  const tfile = path.join(CACHE, 'tts_src_' + hashUrl(text) + '.txt');
+  try { fs.writeFileSync(tfile, text, 'utf8'); } catch (e) { return null; }
+  const fq = "'" + String(f).replace(/'/g, "''") + "'";
+  const tq = "'" + String(tfile).replace(/'/g, "''") + "'";
+  const ps = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 0; $s.SetOutputToWaveFile(" + fq + "); $s.Speak([System.IO.File]::ReadAllText(" + tq + ", [System.Text.Encoding]::UTF8)); $s.Dispose();";
   return new Promise((res) => {
     const timer = setTimeout(() => res(null), TTS_TIMEOUT_MS);   // bound the PowerShell TTS render
     execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps], (err) => {
       clearTimeout(timer);
+      try { fs.unlinkSync(tfile); } catch (e) {}
       if (!err && fs.existsSync(f) && fs.statSync(f).size > 0) res(f); else res(null);
     });
   });
@@ -789,12 +795,15 @@ async function processItem() {
     await dubRewindCurrent();   // 视频定位到当前句段起点并暂停
     // 预合成当前句 TTS，避免"点录音后再合成"导致录音开头 0.5~1 秒没录上(第一句前半段缺失)。
     const line = (await dubCurrentText()) || snap.text;
+    console.log('   [dub] #' + snap.index + ' 句长=' + (line ? line.length : 0) + ' 文本="' + (line || '').slice(0, 60) + '"');
     const awav = line ? await synthAnswer(line) : null;
     // 点一次录音按钮并立即回放 TTS。不要在点击后加轮询/预热——那会把 TTS 播放拖到 app 的录音窗之外，
     // 出现"开始录音了但还没录就跳到下一题"。只放一遍：连放两遍会让同一句被录到两次("不清晰")或超窗截断("只录到部分")。
     const started = await dubClickRecord();
     console.log('   [dub] ' + (started ? 'clicked record button.' : 'record button not found.'));
-    if (awav) { await playAudio(awav); console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').'); }
+    if (awav) { await playAudio(awav); console.log('   [dub] replayed TTS (' + fs.statSync(awav).size + 'B).'); }
+    else if (line) { console.log('   [dub] !! 本句 TTS 生成失败(文本含引号/特殊字符或语音引擎报错) -> 会 0 分.'); }
+    else { console.log('   [dub] !! 本句文本为空 -> 跳过 TTS -> 会 0 分.'); }
     // 等 app 自然完成该段录音/评分(有界)，不主动强制停录(避免 app 提前定稿跳题)。
     const endD = Date.now() + 8000;
     while ((await dubRecording()) && Date.now() < endD) { await wait(600); }
