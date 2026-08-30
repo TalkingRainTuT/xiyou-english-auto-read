@@ -58,6 +58,8 @@ let dubBackDone = false;
 let dubDone = false;
 // 当前配音的稳定标识(背景音频URL+句数)。切换到另一个配音时重置上面两项，修复"第二次趣味配音无法录音"。
 let dubKey = '';
+// 每次会话第一次趣味配音录音前多等一会(引擎 WebSocket 冷启动可能录成静音)，之后再回放。
+let didFirstDubRecord = false;
 const DETAIL_MENU_NAMES = ['模仿朗读', '角色扮演', '故事复述'];
 const DEBUG = (CFG.cdpUrl || 'http://127.0.0.1') + ':' + PORT;
 const APP_PREFIX = CFG.appUrlPrefix || 'https://student.xiyouyingyu.com';
@@ -790,14 +792,28 @@ async function processItem() {
     // 预合成当前句 TTS，避免"点录音后再合成"导致录音开头 0.5~1 秒没录上(第一句前半段缺失)。
     const line = (await dubCurrentText()) || snap.text;
     const awav = line ? await synthAnswer(line) : null;
-    const started = await dubClickRecord();
-    console.log('   [dub] ' + (started ? 'clicked record button (recording started).' : 'record button not found.'));
-    // 紧接着立即播放(中间无 0.5~1s 延迟)，让录音一开始就喂入正确发音。
-    if (awav) { await playAudio(awav); await playAudio(awav); console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').'); }
-    // 等 app 完成该段录音/评分（有界）。
-    const endD = Date.now() + 5000;
-    while ((await dubRecording()) && Date.now() < endD) { await wait(600); }
-    console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
+    // 确保录音已真正开始(点击 div.record 后确认 egRecordState)，避免个别句子"没录上"。
+    await dubClickRecord();
+    let recStarted = false;
+    for (let r = 0; r < 4; r++) {
+      recStarted = await dubRecording();
+      if (recStarted) break;
+      await wait(400);
+      await dubClickRecord();
+    }
+    console.log('   [dub] ' + (recStarted ? 'record started (egRecordState=true).' : 'record not started after retries.'));
+    if (recStarted) {
+      // 首次录音给引擎留预热(WebSocket 冷启动可能把开头录成静音/空档)。
+      if (!didFirstDubRecord) { await wait(700); didFirstDubRecord = true; }
+      // 回放 TTS 且只放一遍：连放两遍会让同一句被录到两次("不清晰")或超窗截断("只录到部分")，导致 0 分。
+      if (awav) { await playAudio(awav); console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').'); }
+      // 收一个小尾巴后强制停录，只让引擎录到一遍清晰整句，不再依赖 app 不可预测的自停。
+      await wait(400);
+      await dubStop();
+      const endD = Date.now() + 5000;
+      while ((await dubRecording()) && Date.now() < endD) { await wait(600); }
+      console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
+    }
     // 提交在主循环的 dub 后步处理：录完最后一句后句序不再前进时触发，避免依赖脆弱的 index>=total-1。
     return { ok: true };
   }
