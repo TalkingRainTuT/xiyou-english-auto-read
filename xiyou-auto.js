@@ -744,26 +744,23 @@ async function processItem() {
     if (snap.index > 0 && !dubBackDone) { const back = await dubGoSentence(0); if (back) { console.log('   [dub] back to sentence 0.'); } dubBackDone = true; await wait(600); }
     else { dubBackDone = true; }
     await dubRewindCurrent();   // 视频定位到当前句段起点并暂停
+    // 预合成当前句 TTS，避免"点录音后再合成"导致录音开头 0.5~1 秒没录上(第一句前半段缺失)。
+    const line = (await dubCurrentText()) || snap.text;
+    const awav = line ? await synthAnswer(line) : null;
     const started = await dubClickRecord();
     console.log('   [dub] ' + (started ? 'clicked record button (recording started).' : 'record button not found.'));
-    await wait(500);
-    const line = (await dubCurrentText()) || snap.text;
-    if (line) {
-      const awav = await synthAnswer(line);
-      if (awav) {
-        await playAudio(awav); await playAudio(awav);
-        console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').');
-      }
-    }
+    // 紧接着立即播放(中间无 0.5~1s 延迟)，让录音一开始就喂入正确发音。
+    if (awav) { await playAudio(awav); await playAudio(awav); console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').'); }
     // 等 app 完成该段录音/评分（有界）。
-    const endD = Date.now() + 4000;
-    while ((await dubRecording()) && Date.now() < endD) { await wait(800); }
+    const endD = Date.now() + 5000;
+    while ((await dubRecording()) && Date.now() < endD) { await wait(600); }
     console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
-    // 若已到最后一句话，点「提交」完成整个配音。
+    // 若已到最后一句话，等「提交」按钮可用后点击(重试几秒)，完成整个配音。
     if (snap.index >= (snap.total - 1) && !dubDone) {
       dubDone = true;
-      const sub = await dubSubmit();
-      console.log('   [dub] ' + (sub ? 'last sentence done; triggered submit.' : 'submit button not found.'));
+      let sub = false;
+      for (let t = 0; t < 6; t++) { sub = await dubSubmit(); if (sub) break; await wait(1000); }
+      console.log('   [dub] ' + (sub ? 'last sentence done; triggered submit.' : 'submit button not found (retried).'));
     }
     return { ok: true };
   }
