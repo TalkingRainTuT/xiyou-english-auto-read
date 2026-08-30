@@ -147,8 +147,8 @@ function Write-CfgClientExe($exe) {
 }
 if (Test-Path $exe) { Write-CfgClientExe $exe }
 
-# ---- 6) 校验自动程序文件 + 创建桌面快捷方式 ----
-Write-Host '[6/6] 校验自动程序文件 + 创建桌面快捷方式...' -ForegroundColor Cyan
+# ---- 6) 校验自动程序文件 ----
+Write-Host '[6/6] 校验自动程序文件...' -ForegroundColor Cyan
 $launchBat = Join-Path $Root '双击启动-西柚自动朗读.bat'
 $files = @{
   'xiyou-auto.js'      = Join-Path $Root 'xiyou-auto.js'
@@ -161,29 +161,13 @@ $files = @{
 }
 foreach ($k in $files.Keys) { $p = $files[$k]; $ok = Test-Path $p; Write-Host ("   " + ($(if($ok){'[OK]'}else{'[缺]'})) + " " + $k) -ForegroundColor $(if($ok){'Green'}else{'Red'}) }
 
-# 创建桌面快捷方式（指向启动器 bat）
-try {
-  $Shell = New-Object -ComObject WScript.Shell
-  $desktop = [Environment]::GetFolderPath('Desktop')
-  $lnk = $Shell.CreateShortcut((Join-Path $desktop '西柚自动朗读.lnk'))
-  $lnk.TargetPath = $launchBat
-  $lnk.WorkingDirectory = $Root
-  $lnk.Description = '西柚英语自动朗读'
-  $lnk.Save()
-  Write-Host '   已在桌面创建快捷方式「西柚自动朗读」。' -ForegroundColor Green
-} catch {
-  Write-Host '   创建桌面快捷方式失败（可忽略）：' -ForegroundColor DarkGray
-  Write-Host ('     ' + $_.Exception.Message) -ForegroundColor DarkGray
-}
-
 # ---- 就绪汇总 ----
 $ready = (Test-Node) -and (Test-Dotnet6) -and (Test-VBCable) -and (Test-Path $audioExe) -and (Test-Path $exe)
 Write-Host ''
 Write-Host '===================================================' -ForegroundColor Cyan
 if ($ready) {
   Write-Host ' ✅ 环境与自动程序均已就绪！' -ForegroundColor Green
-  Write-Host '    双击桌面的「西柚自动朗读」或 ' -ForegroundColor Green
-  Write-Host '    「双击启动-西柚自动朗读.bat」开始使用。' -ForegroundColor Green
+  Write-Host '    双击「双击启动-西柚自动朗读.bat」（或运行 xiyou-launch.ps1）开始使用。' -ForegroundColor Green
 } else {
   Write-Host ' ⚠ 部分组件未就绪，请按上方提示处理后再运行启动器。' -ForegroundColor Yellow
 }

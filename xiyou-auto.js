@@ -52,6 +52,10 @@ let didFirstRecord = false;
 // Tracks progress through the paperDetail (作业四) sub-exercises so watch re-enters the NEXT menu
 // (模仿朗读/角色扮演/故事复述) instead of redoing the first one every time.
 let detailMenuIdx = 0;
+// 趣味配音首次进入时若 app 已自动跳到后面句子，需要回退到第0句补录一次(仅一次，避免循环)。
+let dubBackDone = false;
+// 趣味配音全部句子录完后标志，用于触发提交/避免重复重录最后一句。
+let dubDone = false;
 const DETAIL_MENU_NAMES = ['模仿朗读', '角色扮演', '故事复述'];
 const DEBUG = (CFG.cdpUrl || 'http://127.0.0.1') + ':' + PORT;
 const APP_PREFIX = CFG.appUrlPrefix || 'https://student.xiyouyingyu.com';
@@ -313,8 +317,17 @@ async function advance() {
     }
     var r=find('read'); if(r){if(typeof r.handleNext==='function'){r.handleNext();return 'text';}}
     var ch=find('chooseTranslateV2'); if(ch){if(typeof ch.nextList==='function'){ch.nextList();return 'choice';}}
-    // 趣味配音 (DubbingIndex): advance to the next sentence.
-    var db=find('DubbingIndex'); if(db){ if(typeof db.nextSentence==='function'){ db.nextSentence(); return 'dub'; } }
+    // 趣味配音 (DubbingIndex): advance to the next sentence, and rewind the video to that segment's start
+    // (kept paused) so the app is positioned at the NEXT sentence (avoids the app auto-advancing past it).
+    var db=find('DubbingIndex');
+    if(db){
+      if(typeof db.nextSentence==='function'){ try{ db.nextSentence(); }catch(e){} }
+      var a=db._data||{}, nidx=a.sentenceIndex||0;
+      var ns=(a.dubDetail&&a.dubDetail.sentences&&a.dubDetail.sentences[nidx]);
+      var v=document.querySelector('video');
+      if(v){ try{ v.pause(); if(ns && ns.sectionBeginTime!=null){ v.currentTime=ns.sectionBeginTime; } }catch(e){} }
+      return 'dub';
+    }
     return null;
   })()`);
 }
@@ -637,6 +650,60 @@ async function dubRecording() {
     var d=find('DubbingIndex'); if(!d) return false; return !!(d._data&&d._data.egRecordState);
   })()`);
 }
+// 暂停视频：防止 app 在配音页自动播放/跳段，把当前句(尤第一句)跳过。
+async function dubPauseVideo() {
+  return evaluate(`(function(){
+    var v=document.querySelector('video');
+    if(v){ try{ v.pause(); }catch(e){} }
+    return true;
+  })()`);
+}
+// 跳到指定句(下标 i)：用 previousSentence/nextSentence 循环调整，并把视频定位到该段开头。
+async function dubGoSentence(i) {
+  const idx = Number(i) || 0;
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); if(!d) return false;
+    var a=d._data||{};
+    var target=${JSON.stringify(idx)};
+    var cur=(a.sentenceIndex||0), guard=0;
+    while(cur>target && guard<12 && typeof d.previousSentence==='function'){ try{ d.previousSentence(); }catch(e){} cur=(a.sentenceIndex||0); guard++; }
+    while(cur<target && guard<12 && typeof d.nextSentence==='function'){ try{ d.nextSentence(); }catch(e){} cur=(a.sentenceIndex||0); guard++; }
+    var v=document.querySelector('video');
+    var s=(a.dubDetail&&a.dubDetail.sentences&&a.dubDetail.sentences[target]);
+    if(v && s && s.sectionBeginTime!=null){ try{ v.currentTime=s.sectionBeginTime; }catch(e){} }
+    return (a.sentenceIndex===target);
+  })()`);
+}
+// 取当前句的真实文本(从 dubDetail.sentences[sentenceIndex].originalText)。
+async function dubCurrentText() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); if(!d) return '';
+    var a=d._data||{}; var s=(a.dubDetail&&a.dubDetail.sentences&&a.dubDetail.sentences[(a.sentenceIndex||0)]);
+    return s ? (s.originalText||'') : '';
+  })()`);
+}
+// 点「提交」完成整个配音。
+async function dubSubmit() {
+  return evaluate(`(function(){
+    function leaf(t){return [...document.querySelectorAll('*')].filter(function(e){return e.children.length===0 && (e.innerText||'').trim()===t;});}
+    var b=leaf('提交'); if(b.length){ b[0].click(); return true; }
+    return false;
+  })()`);
+}
+// 把视频定位到当前句段起点并暂停(让 app 停在当前句，防止自动跳段跳过)。
+async function dubRewindCurrent() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var d=find('DubbingIndex'); if(!d) return false;
+    var a=d._data||{}; var idx=a.sentenceIndex||0;
+    var s=(a.dubDetail&&a.dubDetail.sentences&&a.dubDetail.sentences[idx]);
+    var v=document.querySelector('video');
+    if(v){ try{ v.pause(); if(s&&s.sectionBeginTime!=null){ v.currentTime=s.sectionBeginTime; } }catch(e){} }
+    return true;
+  })()`);
+}
 // 趣味配音准备页: 点「开始配音」进入 DubbingIndex.
 async function dubPrepStart() {
   return evaluate(`(function(){
@@ -668,23 +735,36 @@ async function processItem() {
     return { ok: true };
   }
 
-  // 作业二 趣味配音 (DubbingIndex): 逐句配音。正确方式：**模拟点击 app 的录音按钮(div.record)**
-  // 让 app 进入正常录音状态(egRecordState=true)，再把当前句 TTS 合成回放给麦克风，app 采集到正确发音并评分。
+  // 作业二 趣味配音 (DubbingIndex): 逐句配音。**模拟点击 app 的录音按钮(div.record)** 触发真实录音，
+  // 再把当前句 TTS 合成回放给麦克风，app 采集到正确发音并评分。进入即暂停视频(防自动跳段跳过第一句)；
+  // 若 app 已自动跳到后面句，仅首次回退到第0句补录。
   if (snap.type === 'dub') {
+    if (dubDone) { console.log('   [dub] already done; waiting for submit.'); await wait(1200); return { ok: true }; }
+    await dubPauseVideo();
+    if (snap.index > 0 && !dubBackDone) { const back = await dubGoSentence(0); if (back) { console.log('   [dub] back to sentence 0.'); } dubBackDone = true; await wait(600); }
+    else { dubBackDone = true; }
+    await dubRewindCurrent();   // 视频定位到当前句段起点并暂停
     const started = await dubClickRecord();
     console.log('   [dub] ' + (started ? 'clicked record button (recording started).' : 'record button not found.'));
-    await wait(600);
-    if (snap.text) {
-      const awav = await synthAnswer(snap.text);
+    await wait(500);
+    const line = (await dubCurrentText()) || snap.text;
+    if (line) {
+      const awav = await synthAnswer(line);
       if (awav) {
         await playAudio(awav); await playAudio(awav);
-        console.log('   [dub] replayed TTS line (' + snap.text.slice(0, 30) + ').');
+        console.log('   [dub] replayed TTS line (' + line.slice(0, 30) + ').');
       }
     }
     // 等 app 完成该段录音/评分（有界）。
     const endD = Date.now() + 4000;
     while ((await dubRecording()) && Date.now() < endD) { await wait(800); }
     console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
+    // 若已到最后一句话，点「提交」完成整个配音。
+    if (snap.index >= (snap.total - 1) && !dubDone) {
+      dubDone = true;
+      const sub = await dubSubmit();
+      console.log('   [dub] ' + (sub ? 'last sentence done; triggered submit.' : 'submit button not found.'));
+    }
     return { ok: true };
   }
 
