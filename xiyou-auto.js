@@ -56,6 +56,8 @@ let detailMenuIdx = 0;
 let dubBackDone = false;
 // 趣味配音全部句子录完后标志，用于触发提交/避免重复重录最后一句。
 let dubDone = false;
+// 当前配音的稳定标识(背景音频URL+句数)。切换到另一个配音时重置上面两项，修复"第二次趣味配音无法录音"。
+let dubKey = '';
 const DETAIL_MENU_NAMES = ['模仿朗读', '角色扮演', '故事复述'];
 const DEBUG = (CFG.cdpUrl || 'http://127.0.0.1') + ':' + PORT;
 const APP_PREFIX = CFG.appUrlPrefix || 'https://student.xiyouyingyu.com';
@@ -321,12 +323,15 @@ async function advance() {
     // (kept paused) so the app is positioned at the NEXT sentence (avoids the app auto-advancing past it).
     var db=find('DubbingIndex');
     if(db){
+      // 记录推进前后的句序。app 的 nextSentence() 到最后一个"可录"句后不再前进(该句已录完，需点提交)，
+      // 因此用"句序是否变化"判定是否已到最后一句，避免依赖脆弱的 index>=total-1。
+      var a0=db._data||{}, idx0=a0.sentenceIndex||0;
       if(typeof db.nextSentence==='function'){ try{ db.nextSentence(); }catch(e){} }
       var a=db._data||{}, nidx=a.sentenceIndex||0;
       var ns=(a.dubDetail&&a.dubDetail.sentences&&a.dubDetail.sentences[nidx]);
       var v=document.querySelector('video');
       if(v){ try{ v.pause(); if(ns && ns.sectionBeginTime!=null){ v.currentTime=ns.sectionBeginTime; } }catch(e){} }
-      return 'dub';
+      return (nidx > idx0) ? 'dub-advanced' : 'dub-stuck';
     }
     return null;
   })()`);
@@ -684,13 +689,41 @@ async function dubCurrentText() {
     return s ? (s.originalText||'') : '';
   })()`);
 }
-// 点「提交」完成整个配音。
+// 点「提交」完成整个配音。按钮文案可能因不同作业而异(提交/完成/完成配音/提交作业等)，逐一命中；
+// 命中"最具体"(文本最短)的那个元素并点击。返回 true 表示点到了某个提交按钮。
 async function dubSubmit() {
   return evaluate(`(function(){
-    function leaf(t){return [...document.querySelectorAll('*')].filter(function(e){return e.children.length===0 && (e.innerText||'').trim()===t;});}
-    var b=leaf('提交'); if(b.length){ b[0].click(); return true; }
+    var texts=['提交','提交作业','提交配音','完成','完成作业','完成配音'];
+    for(var i=0;i<texts.length;i++){
+      var t=texts[i];
+      var els=[...document.querySelectorAll('*')].filter(function(e){ return (e.innerText||'').trim()===t; });
+      if(els.length){ els.sort(function(a,b){return (a.innerText||'').length-(b.innerText||'').length;})[0].click(); return true; }
+    }
     return false;
   })()`);
+}
+// 趣味配音：录完当前句后推进。若推进后句序不再变化(已到最后一个"可录"句)，等待引擎评分/上传完成后点「提交」。
+// app 的 nextSentence() 在最后一个可录句后不再前进，因此以"句序是否变化"判定末尾，比 index>=total-1 更稳。
+// 返回 true 表示触发了提交。已推进或已提交过则直接返回。
+async function dubAdvanceOrSubmit(snapIndex, advResult) {
+  if (dubDone) return false;
+  if (advResult !== 'dub-stuck') return false;   // 已前进到下一句，交给主循环继续
+  let moved = false, leftPage = false;
+  for (let w = 0; w < 8; w++) {
+    await wait(1000);
+    const a2 = await advance();                   // 再试推进(等引擎异步评分/上传完成，避免误判为末尾)
+    if (a2 === 'dub-advanced') { moved = true; break; }
+    const s2 = await detect();
+    if (!s2.found || s2.type !== 'dub') { leftPage = true; break; }   // app 已离开配音页(可能已提交/跳转)
+    if ((s2.index) !== snapIndex) { moved = true; break; }
+  }
+  if (moved || leftPage) return false;
+  // 仍停在当前句(已是最后一个可录句)且未离开配音页 -> 触发提交完成整个配音。
+  dubDone = true;
+  let sub = false;
+  for (let t = 0; t < 8; t++) { sub = await dubSubmit(); if (sub) break; await wait(1000); }
+  console.log('   [dub] ' + (sub ? 'last sentence done; triggered submit.' : 'submit button not found (retried).'));
+  return sub;
 }
 // 把视频定位到当前句段起点并暂停(让 app 停在当前句，防止自动跳段跳过)。
 async function dubRewindCurrent() {
@@ -729,9 +762,16 @@ async function processItem() {
 
   // 趣味配音准备页 (FunDubbing): click 开始配音 to enter the DubbingIndex dubbing screen.
   if (snap.type === 'dub-prep') {
+    // 这是一个全新的配音：重置上次配音留下的"已完成/已回退"状态，修复"第二次趣味配音无法正常录音"。
+    dubDone = false; dubBackDone = false; dubKey = '';
     const clicked = await dubPrepStart();
     console.log('   [dub-prep] ' + (clicked ? 'clicked 开始配音 -> entering dubbing.' : '开始配音 button not found.'));
-    await wait(2000);
+    // 尽快暂停视频并回到第0句，避免 app 自动播放/跳到后面句，造成"先跳到第二句再返回第一句"。
+    await wait(600);
+    await dubPauseVideo();
+    const back = await dubGoSentence(0);
+    if (back) { console.log('   [dub-prep] parked at sentence 0.'); }
+    await wait(1200);
     return { ok: true };
   }
 
@@ -739,6 +779,9 @@ async function processItem() {
   // 再把当前句 TTS 合成回放给麦克风，app 采集到正确发音并评分。进入即暂停视频(防自动跳段跳过第一句)；
   // 若 app 已自动跳到后面句，仅首次回退到第0句补录。
   if (snap.type === 'dub') {
+    // 若切换到另一个配音(不同背景音频/句数)，重置上次配音的状态，保证第二次配音能正常录音。
+    const dk = (snap.audioUrl || '') + '|' + snap.total;
+    if (dubKey !== dk) { dubKey = dk; dubDone = false; dubBackDone = false; }
     if (dubDone) { console.log('   [dub] already done; waiting for submit.'); await wait(1200); return { ok: true }; }
     await dubPauseVideo();
     if (snap.index > 0 && !dubBackDone) { const back = await dubGoSentence(0); if (back) { console.log('   [dub] back to sentence 0.'); } dubBackDone = true; await wait(600); }
@@ -755,13 +798,7 @@ async function processItem() {
     const endD = Date.now() + 5000;
     while ((await dubRecording()) && Date.now() < endD) { await wait(600); }
     console.log('   [dub] segment done (recording=' + (await dubRecording()) + ').');
-    // 若已到最后一句话，等「提交」按钮可用后点击(重试几秒)，完成整个配音。
-    if (snap.index >= (snap.total - 1) && !dubDone) {
-      dubDone = true;
-      let sub = false;
-      for (let t = 0; t < 6; t++) { sub = await dubSubmit(); if (sub) break; await wait(1000); }
-      console.log('   [dub] ' + (sub ? 'last sentence done; triggered submit.' : 'submit button not found (retried).'));
-    }
+    // 提交在主循环的 dub 后步处理：录完最后一句后句序不再前进时触发，避免依赖脆弱的 index>=total-1。
     return { ok: true };
   }
 
@@ -920,7 +957,13 @@ async function main() {
       if (!r.ok) { console.log('   !! ' + r.reason); break; }
       // Advance to the next item (for text this also submits the last paragraph).
       // If the component is already gone (submitted/navigated), advance() is a safe no-op.
-      const adv = await advance();
+      // 趣味配音准备页: processItem 已在第0句停好，这里不要再 advance()——否则 nextSentence() 会把 app
+      // 推到第1句(造成"先跳到第二句再返回第一句")。其它题型正常推进。
+      const adv = snap.type === 'dub-prep' ? null : await advance();
+      // 趣味配音：录完一句后推进；若句序不再前进(已到最后一句)则触发提交，保证能自动提交并返回作业详情。
+      if (snap.type === 'dub') {
+        await dubAdvanceOrSubmit(snap.index, adv);
+      }
       // accentDetail: goNext may be a no-op while the engine's async callback hasn't cleared
       // egRecordState/spinning yet. Wait and retry until the sentence index actually moves.
       if (snap.type === 'sentence' && adv === 'sentence-pending') {
@@ -1023,7 +1066,13 @@ async function main() {
           stuckRec = 0;
           if (snap.type === 'word' || snap.type === 'text') readDone = true;   // reading done -> next time on unitWordListV2 open choice
           await processItem();
-          const adv = await advance();
+          // 趣味配音准备页: processItem 已在第0句停好，这里不要再 advance()——否则 nextSentence() 会把 app
+          // 推到第1句(造成"先跳到第二句再返回第一句")。其它题型正常推进。
+          const adv = snap.type === 'dub-prep' ? null : await advance();
+          // 趣味配音：录完一句后推进；若句序不再前进(已到最后一句)则触发提交，保证能自动提交并返回作业详情。
+          if (snap.type === 'dub') {
+            await dubAdvanceOrSubmit(snap.index, adv);
+          }
           // accentDetail: goNext may no-op until the engine's async callback clears egRecordState/spinning.
           if (snap.type === 'sentence' && adv === 'sentence-pending') {
             for (let w = 0; w < 12; w++) {
