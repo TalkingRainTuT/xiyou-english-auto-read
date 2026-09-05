@@ -496,7 +496,16 @@ async function stopRecord() {
       }
       var s=find('accentDetail'); if(s&&s.egRecordState){if(typeof s.stop==='function'){s.stop();}else if(typeof s.stopRecord==='function'){s.stopRecord();}return true;}
       var d=find('paperDetail'); if(d&&d.egRecordState){if(typeof d.stop==='function'){d.stop();}else if(d.EngineEvaluat&&typeof d.EngineEvaluat.stopRecord==='function'){d.EngineEvaluat.stopRecord();}return true;}
-      var r=find('read'); if(r&&r.egRecordState){if(typeof r.stopRecord==='function'){r.stopRecord();}else{try{r.EngineEvaluat&&r.EngineEvaluat.stopRecord();}catch(e){}}return true;}
+      var r=find('read'); if(r&&r.egRecordState){
+        try{
+          if(typeof r.stopRecord==='function') r.stopRecord();
+          else if(typeof r.stop==='function') r.stop();
+          if(r.EngineEvaluat && typeof r.EngineEvaluat.stopRecord==='function') r.EngineEvaluat.stopRecord();
+        }catch(e){}
+        // 最后一招：直接清掉录音态，避免长课文/卡死时一直 "recording=true" 反复 force-stop。
+        if(r.egRecordState) r.egRecordState = false;
+        return true;
+      }
     }catch(e){}
     return false;
   })()`);
@@ -875,7 +884,8 @@ async function processItem() {
   // guarantees each word's correct audio is replayed (fixes word-reading scores of 0).
   const audioKey = slug(snap.text).slice(0, 40) + '_' + hashUrl(snap.audioUrl);
   const audio = await ensureAudio(snap.type + '_' + audioKey, snap.audioUrl);
-  if (!audio) { console.log('   !! no audio'); return { ok: false, reason: 'no audio' }; }
+  if (!audio) { console.log('   !! no audio (url="' + snap.audioUrl + '")'); return { ok: false, reason: 'no audio' }; }
+  console.log('   [' + snap.type + '] audio(' + snap.index + '): "' + snap.audioUrl + '" -> ' + fs.statSync(audio).size + 'B');
 
   const winSec = (snap.windowSec || 10);
   const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
@@ -906,11 +916,13 @@ async function processItem() {
     await wait(500);                                // 0.5s tail after the audio, then switch
   }
   // Force-stop so the engine finalizes and egRecordState clears, then a short grace wait.
+  // 课文整段录音较长，先多等一段让引擎消化，再停；其它题型快速停。
+  await wait(snap.type === 'text' ? 1500 : 0);
   await stopRecord();
-  const end = Date.now() + 2500;
+  const end = Date.now() + (snap.type === 'text' ? 8000 : 2500);
   while ((await recording()) && Date.now() < end) { await wait(1000); }
   if (snap.type !== 'text') await wait(500);        // 0.5s lead-out after the record
-  console.log('   record window ended (replays=3, recording=' + (await recording()) + ')');
+  console.log('   record window ended (replays=' + plays + ', recording=' + (await recording()) + ')');
   return { ok: true };
 }
 

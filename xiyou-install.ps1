@@ -9,6 +9,25 @@
 #   powershell -ExecutionPolicy Bypass -File xiyou-install.ps1
 param([switch]$Auto, [switch]$NoOpen)
 $ErrorActionPreference = 'Continue'
+
+# ---- 0) 自动以管理员身份运行：Node/.NET/VB-Cable 的安装都需要管理员权限，
+#         非管理员运行会弹 UAC 或安装失败导致"无法正常安装"。 ----
+$isAdmin = $false
+try {
+  $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch { $isAdmin = $false }
+if (-not $isAdmin) {
+  Write-Host ''
+  Write-Host '  需要管理员权限以正常安装，正在以管理员身份重新启动本安装程序...' -ForegroundColor Yellow
+  $sp = $MyInvocation.MyCommand.Path
+  $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $sp))
+  if ($Auto)   { $argList += '-Auto' }
+  if ($NoOpen) { $argList += '-NoOpen' }
+  Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs -Wait
+  Write-Host '  请在系统弹出的 UAC 提示中点"是"，安装会在新窗口继续。' -ForegroundColor Yellow
+  exit
+}
+
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CfgPath = Join-Path $Root 'config.json'
 
