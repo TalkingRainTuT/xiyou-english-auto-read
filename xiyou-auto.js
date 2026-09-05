@@ -905,13 +905,21 @@ async function processItem() {
     return { ok: true, record: true };
   }
 
-  // 单词/句子/课文：用 TTS 合成回放(与配音一致)，而不是回放 app 的参考音频。
-  // 实测：回放参考音频(physiology)引擎判 0 分(snr 12、phones 全 0)；回放 TTS 不同人声得 97.5 分(snr 40)，
-  // 因为引擎侦测到"就是参考音"就不予评分；换成合成音才当作学生朗读来打分(这正是配音能出分的原因)。
-  const ttxt = (await currentFullText(snap)) || snap.text;
-  const audio = await synthAnswer(ttxt);
-  if (!audio) { console.log('   !! TTS 生成失败(文本="' + ttxt.slice(0, 40) + '")'); return { ok: false, reason: 'no audio' }; }
-  console.log('   [' + snap.type + '] TTS(' + snap.index + '): "' + ttxt.slice(0, 40) + '" -> ' + fs.statSync(audio).size + 'B');
+  // 单词/句子：用 TTS 合成回放(与配音一致)——回放参考音频会被引擎判 0(实测 physiology: 参考=0分, TTS=97.5分)。
+  // 课文：保持原样，仍回放参考音频(用户要求只改单词/句子的 TTS，其它不变)。
+  let audio;
+  if (snap.type === 'word' || snap.type === 'sentence') {
+    const ttxt = (await currentFullText(snap)) || snap.text;
+    audio = await synthAnswer(ttxt);
+    if (!audio) { console.log('   !! TTS 生成失败(文本="' + ttxt.slice(0, 40) + '")'); return { ok: false, reason: 'no audio' }; }
+    console.log('   [' + snap.type + '] TTS(' + snap.index + '): "' + ttxt.slice(0, 40) + '" -> ' + fs.statSync(audio).size + 'B');
+  } else {
+    // 课文等：回放参考音频(原逻辑)
+    const audioKey = slug(snap.text).slice(0, 40) + '_' + hashUrl(snap.audioUrl);
+    audio = await ensureAudio(snap.type + '_' + audioKey, snap.audioUrl);
+    if (!audio) { console.log('   !! no audio (url="' + snap.audioUrl + '")'); return { ok: false, reason: 'no audio' }; }
+    console.log('   [' + snap.type + '] audio(' + snap.index + '): "' + snap.audioUrl + '" -> ' + fs.statSync(audio).size + 'B');
+  }
 
   const winSec = (snap.windowSec || 10);
   const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
@@ -925,26 +933,24 @@ async function processItem() {
   await startRecord();
   await wait(snap.type === 'text' ? 200 : 150);   // 极小前置，等录音真正开始后再回放
   didFirstRecord = true;
-  let plays = 0;
   if (snap.type === 'text') {
     // Article: play the full audio once (it IS the whole paragraph reading). Do NOT loop it.
-    await playAudio(audio); plays = 1;
+    await playAudio(audio);
     console.log('   [text] replayed model audio (1x, ' + (fs.statSync(audio).size) + 'B file, window=' + winSec + 's).');
   } else {
     // Word/sentence: play the correct pronunciation immediately (no long lead-in), let the app record it.
-    await playAudio(audio); plays = 1;
+    await playAudio(audio);
   }
-  // 有界等待 app 自然完成录音并评分(与配音一致)；超时仍卡在录音态才兜底停录(避免死循环)。
-  const stopWait = Math.max(4500, (snap.windowSec || 10) * 1000 + 2000);
-  let end = Date.now() + stopWait;
-  while ((await recording()) && Date.now() < end) { await wait(600); }
-  if (await recording()) {                          // 兜底：自然停不下来 -> 强制停录(清态)
-    console.log('   [record] natural stop timed out; forcing stop.');
-    await stopRecord();
-    const e2 = Date.now() + 5000;
-    while ((await recording()) && Date.now() < e2) { await wait(800); }
-  }
-  console.log('   record window ended (replays=' + plays + ', recording=' + (await recording()) + ')');
+  // 播完后短暂停一下让语音到达麦克风，然后停录，并等录音态清空，让主循环的 advance()(nextList/goNext)
+  // 能切到下一条(恢复"读完自动下一条")。之前改成纯等待自然停录会等太久/卡住，看起来"不自动下一条"。
+  if (snap.type !== 'text') await wait(300);   // 单词/句子留少量尾巴
+  await stopRecord();                           // 强制停(sentence/text 有效；word 无 stopRecord 则无效果)
+  const end = Date.now() + 4000;
+  while ((await recording()) && Date.now() < end) { await wait(800); }
+  // word 没有 stopRecord 方法时靠 app 自己停(有界)
+  const end2 = Date.now() + 8000;
+  while ((await recording()) && Date.now() < end2) { await wait(800); }
+  console.log('   record window ended (recording=' + (await recording()) + ')');
   return { ok: true };
 }
 
