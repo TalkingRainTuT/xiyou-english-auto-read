@@ -657,6 +657,20 @@ async function dubStart() {
     return !!(d._data&&d._data.egRecordState);
   })()`);
 }
+// 点击 app 原生的录音按钮(.record，i.e. 「点击录音」)——与配音一致，走 app 真正的录音状态机。
+// 单词/课文之前用 egStartRecord() 直接调方法，不会触发 app 的录音流程，录出来的音评分低/0 分。
+// 若找不到 .record，再回退调用组件自身的录音方法。
+async function clickRecordBtn() {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var r=document.querySelector('.record');
+    if(r){ r.click(); return true; }   // app 原生录音按钮
+    var w=find('readingLoudlyV2'); if(w&&typeof w.egStartRecord==='function'){ w.egStartRecord(); return true; }
+    var s=find('accentDetail'); if(s&&typeof s.startRecord==='function'){ s.startRecord(); return true; }
+    var rd=find('read'); if(rd&&typeof rd.egStartRecord==='function'){ rd.egStartRecord(); return true; }
+    return false;
+  })()`);
+}
 async function dubStop() {
   return evaluate(`(function(){
     function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
@@ -894,24 +908,20 @@ async function processItem() {
   const atStart = (snap.type === 'sentence') ? (snap.index === 1) : (snap.index === 0);
   if (atStart) await wait(1000);                        // +1s at the very start to avoid a missed recording
   if (snap.type !== 'text') await wait(500);                 // 0.5s lead-in before word/sentence record
-  await startRecord();
-  // 正确发音尽量贴近录音窗起点开始(与配音一致)：单词/句子只留很少前置，课文也尽量贴近开头，
-  // 避免开头被算作静音/对齐偏差导致低分。
-  await wait(snap.type === 'text' ? 200 : (first ? 700 : 150));
+  // 关键：点击 app 原生的录音按钮(.record)触发真实录音(与配音一致)——而不是调用 egStartRecord()。
+  // egStartRecord() 不走 app 的录音状态机，录出的音评分低/0 分。点完立即回放正确发音。
+  await clickRecordBtn();
   didFirstRecord = true;
-  // Feed the correct pronunciation into the mic. 关键：不要立即 FORCE-STOP——评分需要 app 自然完成录音
-  // (与配音一致)；force-stop 会把录音掐短/掐断，导致单词低分、课文 0 分。改为有界等待 app 自然结束录音；
-  // 超时仍卡在录音态才兜底停录(避免死循环)。
   let plays = 0;
   if (snap.type === 'text') {
     // Article: play the full audio once (it IS the whole paragraph reading). Do NOT loop it.
     await playAudio(audio); plays = 1;
     console.log('   [text] replayed model audio (1x, ' + (fs.statSync(audio).size) + 'B file, window=' + winSec + 's).');
   } else {
-    if (first) await wait(800);                    // 仅第一项保留预热(引擎冷启动)
+    // Word/sentence: play the correct pronunciation immediately (no long lead-in), let the app record it.
     await playAudio(audio); plays = 1;
-    await wait(300);                                // 轻微尾巴，让 app 检测到语音结束
   }
+  // 有界等待 app 自然完成录音并评分(与配音一致)；超时仍卡在录音态才兜底停录(避免死循环)。
   const stopWait = Math.max(4500, (snap.windowSec || 10) * 1000 + 2000);
   let end = Date.now() + stopWait;
   while ((await recording()) && Date.now() < end) { await wait(600); }
