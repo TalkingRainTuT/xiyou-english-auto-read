@@ -895,33 +895,32 @@ async function processItem() {
   if (atStart) await wait(1000);                        // +1s at the very start to avoid a missed recording
   if (snap.type !== 'text') await wait(500);                 // 0.5s lead-in before word/sentence record
   await startRecord();
-  // For text (read) the model audio is the WHOLE paragraph reading, which should span the record window.
-  // Minimal lead-in so the playback fills the window from the start (a long lead-in would push the tail out
-  // of the recording window -> the latter part of the passage is cut -> low score).
-  await wait(snap.type === 'text' ? 200 : (first ? 700 : 300));
+  // 正确发音尽量贴近录音窗起点开始(与配音一致)：单词/句子只留很少前置，课文也尽量贴近开头，
+  // 避免开头被算作静音/对齐偏差导致低分。
+  await wait(snap.type === 'text' ? 200 : (first ? 700 : 150));
   didFirstRecord = true;
-  // Feed the correct pronunciation into the mic by replaying the audio a bounded number of
-  // passes, then FORCE-STOP the recording so we don't wait for the app's (long) countdown and
-  // so egRecordState clears (which lets goNext/handleNext advance -> fixes sentence repeating).
+  // Feed the correct pronunciation into the mic. 关键：不要立即 FORCE-STOP——评分需要 app 自然完成录音
+  // (与配音一致)；force-stop 会把录音掐短/掐断，导致单词低分、课文 0 分。改为有界等待 app 自然结束录音；
+  // 超时仍卡在录音态才兜底停录(避免死循环)。
   let plays = 0;
   if (snap.type === 'text') {
     // Article: play the full audio once (it IS the whole paragraph reading). Do NOT loop it.
     await playAudio(audio); plays = 1;
     console.log('   [text] replayed model audio (1x, ' + (fs.statSync(audio).size) + 'B file, window=' + winSec + 's).');
   } else {
-    // Word/sentence — deterministic fast rhythm: play the correct audio ONCE (efficiency), then
-    // a short pause, then FORCE-STOP. No waiting for the app's long countdown.
-    if (first) await wait(800);                    // small warm-up only on the very first word
+    if (first) await wait(800);                    // 仅第一项保留预热(引擎冷启动)
     await playAudio(audio); plays = 1;
-    await wait(500);                                // 0.5s tail after the audio, then switch
+    await wait(300);                                // 轻微尾巴，让 app 检测到语音结束
   }
-  // Force-stop so the engine finalizes and egRecordState clears, then a short grace wait.
-  // 课文整段录音较长，先多等一段让引擎消化，再停；其它题型快速停。
-  await wait(snap.type === 'text' ? 1500 : 0);
-  await stopRecord();
-  const end = Date.now() + (snap.type === 'text' ? 8000 : 2500);
-  while ((await recording()) && Date.now() < end) { await wait(1000); }
-  if (snap.type !== 'text') await wait(500);        // 0.5s lead-out after the record
+  const stopWait = Math.max(4500, (snap.windowSec || 10) * 1000 + 2000);
+  let end = Date.now() + stopWait;
+  while ((await recording()) && Date.now() < end) { await wait(600); }
+  if (await recording()) {                          // 兜底：自然停不下来 -> 强制停录(清态)
+    console.log('   [record] natural stop timed out; forcing stop.');
+    await stopRecord();
+    const e2 = Date.now() + 5000;
+    while ((await recording()) && Date.now() < e2) { await wait(800); }
+  }
   console.log('   record window ended (replays=' + plays + ', recording=' + (await recording()) + ')');
   return { ok: true };
 }
