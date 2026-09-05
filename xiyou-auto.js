@@ -73,7 +73,7 @@ const FETCH_TIMEOUT_MS = (CFG.fetchTimeoutMs || 20000); // audio download timeou
 // model audio can be ~116s (e.g. 2.8MB). The old 45s default cut such a long audio at 45s, so the script
 // stopRecord'd after only the first 45s -> the latter half ("后半段") was never recorded -> score 0.
 const REPLAY_TIMEOUT_MS = (CFG.replayTimeoutMs || 240000); // allow up to a 4-min passage to play fully
-const TTS_TIMEOUT_MS = (CFG.ttsTimeoutMs || 30000);      // wall-clock cap for the PowerShell TTS render
+const TTS_TIMEOUT_MS = (CFG.ttsTimeoutMs || 120000);      // wall-clock cap for the PowerShell TTS render (长课文需较长)
 // A CDP Runtime.evaluate can silently hang when the app's page is briefly busy (e.g. right after a
 // record step). Without a bound that would stall the whole loop forever (the "作业四卡死" symptom).
 const EVAL_TIMEOUT_MS = (CFG.evalTimeoutMs || 20000);    // wall-clock cap for one CDP evaluate call
@@ -609,6 +609,19 @@ async function synthAnswer(text) {
   });
 }
 
+// 读取当前朗读项的完整文本(单词/句子/课文/配音)，用于 TTS 合成回放。课文 originalText 含 HTML/phonetic 标记，
+// 由 synthAnswer 内的 sanitizeForTts 清除后朗读。
+async function currentFullText(snap) {
+  return evaluate(`(function(){
+    function find(n){var c=null;document.querySelectorAll('*').forEach(function(el){if(!c&&el.__vue__&&el.__vue__.$options.name===n)c=el.__vue__;});return c;}
+    var w=find('readingLoudlyV2'); if(w){ var it=w.list[w.listIndex]||{}; return it.name||''; }
+    var s=find('accentDetail'); if(s){ var p=s.process||{},i=p.infoData||{},om=p.oralTypeModel||{}; return om.refText||i.showTxt||''; }
+    var r=find('read'); if(r){ var cp=r.currentParagraph||{}; return cp.originalText||''; }
+    var db=find('DubbingIndex'); if(db){ var a=db._data||{},s2=(a.dubDetail&&a.dubDetail.sentences&&a.dubDetail.sentences[(a.sentenceIndex||0)]); return s2?(s2.originalText||''):''; }
+    return '';
+  })()`);
+}
+
 
 
 // When paperDetail's save-upload flow stalls (loading stuck true after a record), force the step
@@ -892,14 +905,13 @@ async function processItem() {
     return { ok: true, record: true };
   }
 
-  // Cache key must be per-WORD (text + url hash), NOT per index: the same index in a different
-  // exercise is a different word, and a stale "word_0.mp3" from a previous unit would replay the
-  // wrong pronunciation -> the engine hears a different word -> score ~0. Keying by text+url hash
-  // guarantees each word's correct audio is replayed (fixes word-reading scores of 0).
-  const audioKey = slug(snap.text).slice(0, 40) + '_' + hashUrl(snap.audioUrl);
-  const audio = await ensureAudio(snap.type + '_' + audioKey, snap.audioUrl);
-  if (!audio) { console.log('   !! no audio (url="' + snap.audioUrl + '")'); return { ok: false, reason: 'no audio' }; }
-  console.log('   [' + snap.type + '] audio(' + snap.index + '): "' + snap.audioUrl + '" -> ' + fs.statSync(audio).size + 'B');
+  // 单词/句子/课文：用 TTS 合成回放(与配音一致)，而不是回放 app 的参考音频。
+  // 实测：回放参考音频(physiology)引擎判 0 分(snr 12、phones 全 0)；回放 TTS 不同人声得 97.5 分(snr 40)，
+  // 因为引擎侦测到"就是参考音"就不予评分；换成合成音才当作学生朗读来打分(这正是配音能出分的原因)。
+  const ttxt = (await currentFullText(snap)) || snap.text;
+  const audio = await synthAnswer(ttxt);
+  if (!audio) { console.log('   !! TTS 生成失败(文本="' + ttxt.slice(0, 40) + '")'); return { ok: false, reason: 'no audio' }; }
+  console.log('   [' + snap.type + '] TTS(' + snap.index + '): "' + ttxt.slice(0, 40) + '" -> ' + fs.statSync(audio).size + 'B');
 
   const winSec = (snap.windowSec || 10);
   const first = snap.type !== 'choice' && !didFirstRecord;   // capture BEFORE flipping the flag
@@ -908,9 +920,10 @@ async function processItem() {
   const atStart = (snap.type === 'sentence') ? (snap.index === 1) : (snap.index === 0);
   if (atStart) await wait(1000);                        // +1s at the very start to avoid a missed recording
   if (snap.type !== 'text') await wait(500);                 // 0.5s lead-in before word/sentence record
-  // 关键：点击 app 原生的录音按钮(.record)触发真实录音(与配音一致)——而不是调用 egStartRecord()。
-  // egStartRecord() 不走 app 的录音状态机，录出的音评分低/0 分。点完立即回放正确发音。
-  await clickRecordBtn();
+  // 关键：用 egStartRecord() 触发 app 的录音。注意：单词的 .record 元素点击并不会真正开始录音
+  // (只有配音那种 .record 才有效)，所以仍走组件方法开始录音，随后立即回放正确发音。
+  await startRecord();
+  await wait(snap.type === 'text' ? 200 : 150);   // 极小前置，等录音真正开始后再回放
   didFirstRecord = true;
   let plays = 0;
   if (snap.type === 'text') {
